@@ -1,0 +1,469 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Sentinel - Event-Driven Incident & Reliability Platform
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  CognitoUserPoolId:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasUserPool: !Not [!Equals [!Ref CognitoUserPoolId, '']]
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    MemorySize: 256
+    Timeout: 10
+    Tracing: Active
+    Environment:
+      Variables:
+        STAGE: !Ref Stage
+        DEFAULT_ENV: !Ref Stage
+        EVENT_BUS_NAME: !Ref SentinelBus
+        EVENTS_QUEUE_URL: !Ref EventsQueue
+        NOTIFICATIONS_QUEUE_URL: !Ref NotificationsQueue
+        INCIDENTS_TABLE_NAME: !Ref IncidentsTable
+        EVENT_STATE_TABLE_NAME: !Ref EventStateTable
+        OUTBOX_TABLE_NAME: !Ref OutboxTable
+        INCIDENT_EVENTS_TABLE_NAME: !Ref IncidentEventsTable
+        IDEMPOTENCY_TABLE_NAME: !Ref IdempotencyTable
+        RULES_TABLE_NAME: !Ref RulesTable
+        DEDUP_WINDOW_MS: '300000'
+        SEVERITY_WINDOW_MS: '300000'
+
+Resources:
+  SentinelApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'authorization,content-type,x-correlation-id'"
+        AllowOrigin: "'*'"
+      Auth: !If
+        - HasUserPool
+        - DefaultAuthorizer: CognitoAuthorizer
+          Authorizers:
+            CognitoAuthorizer:
+              UserPoolArn: !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}
+        - !Ref AWS::NoValue
+
+  SentinelBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub sentinel-${Stage}-bus
+
+  EventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub sentinel-${Stage}-events-queue
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EventsDlq.Arn
+        maxReceiveCount: 3
+
+  EventsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub sentinel-${Stage}-events-dlq
+      MessageRetentionPeriod: 1209600
+
+  NotificationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub sentinel-${Stage}-notifications-queue
+      VisibilityTimeout: 30
+
+  EventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref EventsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeToSend
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt EventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt IngestToQueueRule.Arn
+
+  NotificationsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref NotificationsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeToSend
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt NotificationsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt IncidentChangedRule.Arn
+
+  IngestToQueueRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref SentinelBus
+      EventPattern:
+        source:
+          - sentinel.ingest
+      Targets:
+        - Arn: !GetAtt EventsQueue.Arn
+          Id: EventsQueueTarget
+
+  IncidentChangedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref SentinelBus
+      EventPattern:
+        source:
+          - sentinel.incident
+        detail-type:
+          - IncidentChanged
+      Targets:
+        - Arn: !GetAtt NotificationsQueue.Arn
+          Id: NotificationsQueueTarget
+
+  IncidentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sentinel-${Stage}-incidents
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: status-index
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  EventStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sentinel-${Stage}-event-state
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  IncidentEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sentinel-${Stage}-incident-events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  IdempotencyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sentinel-${Stage}-idempotency
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: eventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: eventId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  OutboxTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sentinel-${Stage}-outbox
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: outboxId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: outboxId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: status-index
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  RulesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sentinel-${Stage}-rules
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: ruleId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ruleId
+          KeyType: HASH
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub sentinel-${Stage}-ingest
+      CodeUri: ..
+      Handler: handler.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IdempotencyTable
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref SentinelBus
+      Events:
+        IngestApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /v1/events
+            Method: POST
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - services/ingest-api/src/handler.ts
+        Minify: false
+        Target: node20
+        Sourcemap: true
+
+  IncidentEngineFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub sentinel-${Stage}-incident-engine
+      CodeUri: ..
+      Handler: handler.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventStateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentEventsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OutboxTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RulesTable
+      Events:
+        EventsQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EventsQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - services/incident-engine/src/handler.ts
+        Minify: false
+        Target: node20
+        Sourcemap: true
+
+  OutboxPublisherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub sentinel-${Stage}-outbox-publisher
+      CodeUri: ..
+      Handler: handler.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OutboxTable
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref SentinelBus
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - services/outbox-publisher/src/handler.ts
+        Minify: false
+        Target: node20
+        Sourcemap: true
+
+  NotificationWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub sentinel-${Stage}-notification-worker
+      CodeUri: ..
+      Handler: handler.handler
+      Events:
+        NotificationsQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt NotificationsQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - services/notification-worker/src/handler.ts
+        Minify: false
+        Target: node20
+        Sourcemap: true
+
+  IncidentApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub sentinel-${Stage}-incident-api
+      CodeUri: ..
+      Handler: handler.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OutboxTable
+      Events:
+        ListIncidents:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /v1/incidents
+            Method: GET
+        GetIncident:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /v1/incidents/{incidentId}
+            Method: GET
+        AckIncident:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /v1/incidents/{incidentId}/ack
+            Method: POST
+        ResolveIncident:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /v1/incidents/{incidentId}/resolve
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - services/incident-api/src/handler.ts
+        Minify: false
+        Target: node20
+        Sourcemap: true
+
+  SentinelDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub sentinel-${Stage}-dashboard
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "Sentinel", "events_ingested", "service", "ingest-api" ],
+                  [ ".", "events_deduplicated", "service", "incident-engine" ],
+                  [ ".", "incidents_opened", "service", "incident-engine" ],
+                  [ ".", "incidents_escalated", "service", "incident-engine" ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Sentinel Core Metrics"
+              }
+            },
+            {
+              "type": "metric",
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "Sentinel", "processing_latency_ms", "service", "incident-engine" ]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Processing Latency"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${SentinelApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}
+  EventsQueueUrl:
+    Value: !Ref EventsQueue
+  EventsDlqUrl:
+    Value: !Ref EventsDlq
+  NotificationsQueueUrl:
+    Value: !Ref NotificationsQueue

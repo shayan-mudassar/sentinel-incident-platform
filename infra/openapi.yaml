@@ -1,0 +1,186 @@
+openapi: 3.0.3
+info:
+  title: Sentinel API
+  version: 0.1.0
+  description: Event ingestion and incident query APIs for Sentinel.
+servers:
+  - url: https://{apiId}.execute-api.{region}.amazonaws.com/{stage}
+    variables:
+      apiId:
+        default: replace-with-api-id
+      region:
+        default: us-east-1
+      stage:
+        default: dev
+paths:
+  /v1/events:
+    post:
+      summary: Ingest an event
+      description: Validates and enqueues an operational event for correlation.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestEvent'
+      responses:
+        '200':
+          description: Event accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted:
+                    type: boolean
+                  eventId:
+                    type: string
+                  status:
+                    type: string
+        '400':
+          description: Invalid request
+        '500':
+          description: Failed to publish
+  /v1/incidents:
+    get:
+      summary: List incidents
+      security:
+        - CognitoAuthorizer: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/IncidentStatus'
+        - in: query
+          name: source
+          schema:
+            type: string
+        - in: query
+          name: env
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Incident list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Incident'
+  /v1/incidents/{incidentId}:
+    get:
+      summary: Get incident by id
+      security:
+        - CognitoAuthorizer: []
+      parameters:
+        - in: path
+          name: incidentId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Incident
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  incident:
+                    $ref: '#/components/schemas/Incident'
+        '404':
+          description: Not found
+  /v1/incidents/{incidentId}/ack:
+    post:
+      summary: Acknowledge incident
+      security:
+        - CognitoAuthorizer: []
+      parameters:
+        - in: path
+          name: incidentId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Acknowledged
+  /v1/incidents/{incidentId}/resolve:
+    post:
+      summary: Resolve incident
+      security:
+        - CognitoAuthorizer: []
+      parameters:
+        - in: path
+          name: incidentId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resolved
+components:
+  securitySchemes:
+    CognitoAuthorizer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Severity:
+      type: string
+      enum: [low, medium, high, critical]
+    IncidentStatus:
+      type: string
+      enum: [OPEN, ACK, RESOLVED]
+    IngestEvent:
+      type: object
+      required: [eventId, source, type, timestamp, fingerprint, attributes]
+      properties:
+        eventId:
+          type: string
+        source:
+          type: string
+        type:
+          type: string
+        severityHint:
+          $ref: '#/components/schemas/Severity'
+        timestamp:
+          type: string
+          format: date-time
+        fingerprint:
+          type: string
+        attributes:
+          type: object
+          additionalProperties: true
+    Incident:
+      type: object
+      properties:
+        incidentId:
+          type: string
+        status:
+          $ref: '#/components/schemas/IncidentStatus'
+        source:
+          type: string
+        fingerprint:
+          type: string
+        env:
+          type: string
+        severity:
+          $ref: '#/components/schemas/Severity'
+        openedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lastEventAt:
+          type: string
+          format: date-time
+        eventCount:
+          type: integer
+        version:
+          type: integer
