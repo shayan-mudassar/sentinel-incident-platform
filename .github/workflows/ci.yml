@@ -25,10 +25,10 @@ jobs:
       - name: Test
         run: npm test
     # Uncomment the following lines to enable web tests and build when applicable
-    #   - name: Web tests
-    #     run: npm run web:test
-    #   - name: Web build
-    #     run: npm run web:build
+      - name: Web tests
+        run: npm run web:test
+      - name: Web build
+        run: npm run web:build
       - name: Setup SAM CLI
         uses: aws-actions/setup-sam@v2
       - name: Validate SAM template
