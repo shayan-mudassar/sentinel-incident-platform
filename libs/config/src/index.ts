@@ -14,6 +14,7 @@ export type SentinelConfig = {
   severityWindowMs: number;
   idempotencyTtlSeconds: number;
   eventStateTtlSeconds: number;
+  processingTimeoutSeconds: number;
   outboxTtlSeconds: number;
   incidentEventsTtlSeconds: number;
 };
@@ -44,6 +45,7 @@ export const getConfig = (): SentinelConfig => {
     severityWindowMs: numberFromEnv('SEVERITY_WINDOW_MS', 5 * 60 * 1000),
     idempotencyTtlSeconds: numberFromEnv('IDEMPOTENCY_TTL_SECONDS', 7 * 24 * 60 * 60),
     eventStateTtlSeconds: numberFromEnv('EVENT_STATE_TTL_SECONDS', 7 * 24 * 60 * 60),
+    processingTimeoutSeconds: numberFromEnv('PROCESSING_TIMEOUT_SECONDS', 120),
     outboxTtlSeconds: numberFromEnv('OUTBOX_TTL_SECONDS', 7 * 24 * 60 * 60),
     incidentEventsTtlSeconds: numberFromEnv('INCIDENT_EVENTS_TTL_SECONDS', 7 * 24 * 60 * 60)
   };

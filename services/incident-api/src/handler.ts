@@ -28,6 +28,15 @@ const parseAction = (path: string) => {
   return match ? { incidentId: match[1], action: match[2] } : undefined;
 };
 
+const isConditionalCheckFailed = (error: unknown) => {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'name' in error &&
+    (error as { name?: string }).name === 'ConditionalCheckFailedException'
+  );
+};
+
 export const handler = async (
   event: APIGatewayProxyEvent,
   context: Context
@@ -74,21 +83,29 @@ export const handler = async (
     const nextVersion = incident.version + 1;
     const status: IncidentStatus = action.action === 'ack' ? 'ACK' : 'RESOLVED';
 
-    await updateIncident(
-      config.incidentsTableName,
-      incident.incidentId,
-      {
-        status,
-        severity: incident.severity,
-        lastEventAt: incident.lastEventAt,
-        updatedAt,
-        eventCount: incident.eventCount,
-        version: nextVersion,
-        source: incident.source,
-        env: incident.env
-      },
-      incident.version
-    );
+    try {
+      await updateIncident(
+        config.incidentsTableName,
+        incident.incidentId,
+        {
+          status,
+          severity: incident.severity,
+          lastEventAt: incident.lastEventAt,
+          updatedAt,
+          eventCount: incident.eventCount,
+          version: nextVersion,
+          source: incident.source,
+          env: incident.env
+        },
+        incident.version
+      );
+    } catch (error) {
+      if (isConditionalCheckFailed(error)) {
+        logger.info('incident update conflict', { incidentId: incident.incidentId });
+        return buildResponse(409, { error: 'conflict' });
+      }
+      throw error;
+    }
 
     if (status === 'RESOLVED') {
       await deleteActivePointer(config.incidentsTableName, incident.env, incident.source, incident.fingerprint);

@@ -5,15 +5,18 @@ import { createLogger } from '@sentinel/logger';
 import { emitMetrics } from '@sentinel/metrics';
 import {
   buildIncidentKey,
+  completeEventProcessing,
   createIncident,
   deleteActivePointer,
   getActiveIncident,
   getIncidentById,
   recordIncidentEvent,
+  startEventProcessing,
   updateActivePointer,
   updateIncident,
   updateDedupState,
-  markEventProcessed,
+  updateSeverityState,
+  failEventProcessing,
   putOutboxEvent
 } from '@sentinel/dynamodb';
 import { buildIncidentChangedDetail } from '@sentinel/events';
@@ -23,9 +26,16 @@ const severityFromHint = (hint?: Severity): Severity => {
   return hint || 'low';
 };
 
-const evaluateSeverity = (hint: Severity | undefined, count: number, rules: Awaited<ReturnType<typeof loadRules>>) => {
+const evaluateSeverity = (
+  hint: Severity | undefined,
+  rules: Awaited<ReturnType<typeof loadRules>>,
+  countsByWindow: Map<number, number>,
+  fallbackWindowMs: number
+) => {
   let severity = severityFromHint(hint);
   for (const rule of rules.rules) {
+    const windowMs = rule.windowMs || fallbackWindowMs;
+    const count = countsByWindow.get(windowMs) || 0;
     if (count >= rule.threshold) {
       severity = maxSeverity(severity, rule.severity);
     }
@@ -78,180 +88,245 @@ const processRecord = async (
     fingerprint: detail.fingerprint
   });
 
-  const processed = await markEventProcessed(
+  const processing = await startEventProcessing(
     config.eventStateTableName,
     detail.eventId,
-    config.eventStateTtlSeconds
+    config.eventStateTtlSeconds,
+    config.processingTimeoutSeconds
   );
 
-  if (!processed) {
+  if (processing.status === 'duplicate') {
     logger.info('duplicate event detected, skipping');
     return;
   }
 
-  const dedup = await updateDedupState(
-    config.eventStateTableName,
-    env,
-    detail.source,
-    detail.fingerprint,
-    config.dedupWindowMs,
-    config.eventStateTtlSeconds
-  );
-
-  const suppressed = dedup.suppressed;
-  if (suppressed) {
-    emitMetrics('Sentinel', [{ name: 'events_deduplicated', unit: 'Count', value: 1 }], {
-      service: 'incident-engine',
-      source: detail.source
-    });
-    logger.info('event suppressed by dedup', { count: dedup.count });
+  if (processing.status === 'in_progress') {
+    logger.info('event already in progress, skipping');
+    return;
   }
 
-  const processingLatencyMs = Date.now() - new Date(detail.timestamp).getTime();
-  emitMetrics('Sentinel', [{ name: 'processing_latency_ms', unit: 'Milliseconds', value: processingLatencyMs }], {
-    service: 'incident-engine',
-    source: detail.source
-  });
-
-  const incidentKey = buildIncidentKey(env, detail.source, detail.fingerprint);
-  const active = await getActiveIncident(
-    config.incidentsTableName,
-    env,
-    detail.source,
-    detail.fingerprint
-  );
-
-  const severity = evaluateSeverity(detail.severityHint, dedup.count, rules);
-
-  if (!active) {
-    const incidentId = uuidv4();
-    const now = new Date().toISOString();
-    const incident: Incident = {
-      incidentId,
-      status: 'OPEN',
-      source: detail.source,
-      fingerprint: detail.fingerprint,
+  let succeeded = false;
+  try {
+    const dedup = await updateDedupState(
+      config.eventStateTableName,
       env,
-      severity,
-      openedAt: now,
-      updatedAt: now,
-      lastEventAt: detail.timestamp,
-      eventCount: 1,
-      version: 1
-    };
+      detail.source,
+      detail.fingerprint,
+      config.dedupWindowMs,
+      config.eventStateTtlSeconds
+    );
 
-    try {
-      await createIncident(config.incidentsTableName, incident, env, detail.source, detail.fingerprint);
-      if (!suppressed) {
-        await recordIncidentEvent(
-          config.incidentEventsTableName,
-          incidentId,
-          detail,
-          config.incidentEventsTtlSeconds
-        );
-      }
-      await putOutboxEvent(config.outboxTableName, {
-        outboxId: `INCIDENT#${incidentId}#${incident.version}`,
-        status: 'PENDING',
-        eventType: 'IncidentChanged',
-        source: 'sentinel.incident',
-        detail: buildIncidentChangedDetail(incident, 'OPENED', correlationId),
-        createdAt: now,
-        expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)
-      });
-
-      emitMetrics('Sentinel', [{ name: 'incidents_opened', unit: 'Count', value: 1 }], {
+    const suppressed = dedup.suppressed;
+    if (suppressed) {
+      emitMetrics('Sentinel', [{ name: 'events_deduplicated', unit: 'Count', value: 1 }], {
         service: 'incident-engine',
         source: detail.source
       });
-
-      logger.info('incident opened', { incidentId, incidentKey });
-      return;
-    } catch (error) {
-      logger.warn('race detected while opening incident, retrying', { error: String(error) });
+      logger.info('event suppressed by dedup', { count: dedup.count });
     }
-  }
 
-  const pointer = active ||
-    (await getActiveIncident(config.incidentsTableName, env, detail.source, detail.fingerprint));
-
-  if (!pointer) {
-    logger.warn('active pointer missing after create attempt');
-    return;
-  }
-
-  const incident = await getIncidentById(config.incidentsTableName, pointer.incidentId);
-  if (!incident) {
-    logger.warn('incident state missing', { incidentId: pointer.incidentId });
-    return;
-  }
-
-  const updatedSeverity = maxSeverity(incident.severity, severity);
-  const updatedAt = new Date().toISOString();
-  const eventCount = incident.eventCount + (suppressed ? 0 : 1);
-  const nextVersion = incident.version + 1;
-
-  await updateIncident(
-    config.incidentsTableName,
-    incident.incidentId,
-    {
-      status: incident.status,
-      severity: updatedSeverity,
-      lastEventAt: detail.timestamp,
-      updatedAt,
-      eventCount,
-      version: nextVersion,
-      source: incident.source,
-      env: incident.env
-    },
-    incident.version
-  );
-
-  if (shouldKeepActive(incident.status)) {
-    await updateActivePointer(
-      config.incidentsTableName,
-      incident.env,
-      incident.source,
-      incident.fingerprint,
-      incident.status
-    );
-  } else {
-    await deleteActivePointer(config.incidentsTableName, incident.env, incident.source, incident.fingerprint);
-  }
-
-  if (!suppressed) {
-    await recordIncidentEvent(
-      config.incidentEventsTableName,
-      incident.incidentId,
-      detail,
-      config.incidentEventsTtlSeconds
-    );
-  }
-
-  if (updatedSeverity !== incident.severity) {
-    await putOutboxEvent(config.outboxTableName, {
-      outboxId: `INCIDENT#${incident.incidentId}#${nextVersion}`,
-      status: 'PENDING',
-      eventType: 'IncidentChanged',
-      source: 'sentinel.incident',
-      detail: buildIncidentChangedDetail(
-        { ...incident, severity: updatedSeverity, updatedAt, lastEventAt: detail.timestamp, eventCount, version: nextVersion },
-        'ESCALATED',
-        correlationId
-      ),
-      createdAt: updatedAt,
-      expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)
-    });
-
-    emitMetrics('Sentinel', [{ name: 'incidents_escalated', unit: 'Count', value: 1 }], {
+    const processingLatencyMs = Date.now() - new Date(detail.timestamp).getTime();
+    emitMetrics('Sentinel', [{ name: 'processing_latency_ms', unit: 'Milliseconds', value: processingLatencyMs }], {
       service: 'incident-engine',
       source: detail.source
     });
-  }
 
-  logger.info('incident updated', {
-    incidentId: incident.incidentId,
-    eventCount,
-    severity: updatedSeverity
-  });
+    const countsByWindow = new Map<number, number>();
+    for (const rule of rules.rules) {
+      const windowMs = rule.windowMs || config.severityWindowMs;
+      if (countsByWindow.has(windowMs)) {
+        continue;
+      }
+      const state = await updateSeverityState(
+        config.eventStateTableName,
+        env,
+        detail.source,
+        detail.fingerprint,
+        windowMs,
+        config.eventStateTtlSeconds
+      );
+      countsByWindow.set(windowMs, state.count);
+    }
+
+    const incidentKey = buildIncidentKey(env, detail.source, detail.fingerprint);
+    const severity = evaluateSeverity(detail.severityHint, rules, countsByWindow, config.severityWindowMs);
+
+    const openIncident = async () => {
+      const incidentId = uuidv4();
+      const now = new Date().toISOString();
+      const incident: Incident = {
+        incidentId,
+        status: 'OPEN',
+        source: detail.source,
+        fingerprint: detail.fingerprint,
+        env,
+        severity,
+        openedAt: now,
+        updatedAt: now,
+        lastEventAt: detail.timestamp,
+        eventCount: 1,
+        version: 1
+      };
+
+      try {
+        await createIncident(config.incidentsTableName, incident, env, detail.source, detail.fingerprint);
+        if (!suppressed) {
+          await recordIncidentEvent(
+            config.incidentEventsTableName,
+            incidentId,
+            detail,
+            config.incidentEventsTtlSeconds
+          );
+        }
+        await putOutboxEvent(config.outboxTableName, {
+          outboxId: `INCIDENT#${incidentId}#${incident.version}`,
+          status: 'PENDING',
+          eventType: 'IncidentChanged',
+          source: 'sentinel.incident',
+          detail: buildIncidentChangedDetail(incident, 'OPENED', correlationId),
+          createdAt: now,
+          expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)
+        });
+
+        emitMetrics('Sentinel', [{ name: 'incidents_opened', unit: 'Count', value: 1 }], {
+          service: 'incident-engine',
+          source: detail.source
+        });
+
+        logger.info('incident opened', { incidentId, incidentKey });
+        return true;
+      } catch (error) {
+        logger.warn('race detected while opening incident, retrying', { error: String(error) });
+        return false;
+      }
+    };
+
+    const active = await getActiveIncident(
+      config.incidentsTableName,
+      env,
+      detail.source,
+      detail.fingerprint
+    );
+
+    if (!active) {
+      const created = await openIncident();
+      if (created) {
+        succeeded = true;
+        return;
+      }
+    }
+
+    const pointer = active ||
+      (await getActiveIncident(config.incidentsTableName, env, detail.source, detail.fingerprint));
+
+    if (!pointer) {
+      throw new Error('active pointer missing after create attempt');
+    }
+
+    const incident = await getIncidentById(config.incidentsTableName, pointer.incidentId);
+    if (!incident) {
+      logger.warn('incident state missing', { incidentId: pointer.incidentId });
+      await deleteActivePointer(config.incidentsTableName, env, detail.source, detail.fingerprint);
+      const created = await openIncident();
+      if (created) {
+        succeeded = true;
+        return;
+      }
+      throw new Error('failed to recreate missing incident');
+    }
+
+    const updatedSeverity = maxSeverity(incident.severity, severity);
+    const updatedAt = new Date().toISOString();
+    const eventCount = incident.eventCount + (suppressed ? 0 : 1);
+    const nextVersion = incident.version + 1;
+
+    await updateIncident(
+      config.incidentsTableName,
+      incident.incidentId,
+      {
+        status: incident.status,
+        severity: updatedSeverity,
+        lastEventAt: detail.timestamp,
+        updatedAt,
+        eventCount,
+        version: nextVersion,
+        source: incident.source,
+        env: incident.env
+      },
+      incident.version
+    );
+
+    if (shouldKeepActive(incident.status)) {
+      await updateActivePointer(
+        config.incidentsTableName,
+        incident.env,
+        incident.source,
+        incident.fingerprint,
+        incident.status
+      );
+    } else {
+      await deleteActivePointer(config.incidentsTableName, incident.env, incident.source, incident.fingerprint);
+    }
+
+    if (!suppressed) {
+      await recordIncidentEvent(
+        config.incidentEventsTableName,
+        incident.incidentId,
+        detail,
+        config.incidentEventsTtlSeconds
+      );
+    }
+
+    if (updatedSeverity !== incident.severity) {
+      await putOutboxEvent(config.outboxTableName, {
+        outboxId: `INCIDENT#${incident.incidentId}#${nextVersion}`,
+        status: 'PENDING',
+        eventType: 'IncidentChanged',
+        source: 'sentinel.incident',
+        detail: buildIncidentChangedDetail(
+          { ...incident, severity: updatedSeverity, updatedAt, lastEventAt: detail.timestamp, eventCount, version: nextVersion },
+          'ESCALATED',
+          correlationId
+        ),
+        createdAt: updatedAt,
+        expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)
+      });
+
+      emitMetrics('Sentinel', [{ name: 'incidents_escalated', unit: 'Count', value: 1 }], {
+        service: 'incident-engine',
+        source: detail.source
+      });
+    }
+
+    logger.info('incident updated', {
+      incidentId: incident.incidentId,
+      eventCount,
+      severity: updatedSeverity
+    });
+    succeeded = true;
+  } catch (error) {
+    try {
+      await failEventProcessing(
+        config.eventStateTableName,
+        detail.eventId,
+        config.eventStateTtlSeconds,
+        String(error)
+      );
+    } catch (failError) {
+      logger.error('failed to mark event failed', { error: String(failError) });
+    }
+    throw error;
+  } finally {
+    if (succeeded) {
+      try {
+        await completeEventProcessing(
+          config.eventStateTableName,
+          detail.eventId,
+          config.eventStateTtlSeconds
+        );
+      } catch (error) {
+        logger.warn('failed to mark event processed', { error: String(error) });
+      }
+    }
+  }
 };
