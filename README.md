@@ -96,18 +96,36 @@ sam build -t infra/template.yaml
 sam deploy --guided -t infra/template.yaml
 ```
 
+Required parameters:
+
+- `CognitoUserPoolId` (Cognito user pool id for JWT authorizer; must override the placeholder)
+
 Optional parameters:
 
-- `Stage` (default: dev)
-- `CognitoUserPoolId` (optional; if set, API uses JWT authorizer)
+- `Stage` (default: prod)
+- `CorsAllowOrigin` (default: `*`)
+- `SlackWorkspaceId` + `SlackChannelId` (optional; enables Slack alerts via AWS Chatbot)
+- `AlarmEmail` (optional; sends alarms to email in addition to Slack)
 
 ## Local Dev
 
 ```bash
 npm install
 sam build -t infra/template.yaml
-sam local start-api -t infra/template.yaml
+sam local start-api -t infra/template.yaml --parameter-overrides CognitoUserPoolId=<user-pool-id>
 ```
+
+## Web UI
+
+```bash
+npm install
+npm run web:dev
+```
+
+Environment variables:
+
+- `VITE_API_BASE_URL` (default: `http://localhost:3000`)
+- `VITE_AUTH_TOKEN` (optional JWT for protected endpoints)
 
 ## Demo
 
@@ -147,6 +165,14 @@ export INTEGRATION_AUTH_TOKEN=<jwt>
 npm test
 ```
 
+## Load Testing
+
+```bash
+LOAD_TEST_URL=https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/v1/incidents?status=OPEN \
+LOAD_TEST_AUTH_TOKEN=<jwt> \
+npm run load-test
+```
+
 ## Failure Scenarios
 
 - **Duplicate ingestion requests**: Idempotency table returns prior response without republishing.
@@ -161,7 +187,12 @@ npm test
 - **Metrics**: `events_ingested`, `events_deduplicated`, `incidents_opened`, `incidents_escalated`,
   `processing_latency_ms`.
 - **Tracing**: X-Ray tracing enabled for all Lambdas (SAM `Tracing: Active`).
+- **Alerts**: CloudWatch alarms route to SNS (Slack via AWS Chatbot when configured).
 
 ## OpenAPI
 
 See `infra/openapi.yaml` for the ingestion and incident APIs.
+
+## Operations
+
+See `docs/RUNBOOK.md` for on-call flows, alarm triage, and recovery steps.

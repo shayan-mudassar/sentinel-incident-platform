@@ -11,7 +11,7 @@ servers:
       region:
         default: us-east-1
       stage:
-        default: dev
+        default: prod
 paths:
   /v1/events:
     post:

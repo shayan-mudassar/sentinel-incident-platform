@@ -17,6 +17,7 @@ infra/            SAM template + OpenAPI spec
 services/         Lambda handlers (microservices)
 libs/             Shared libraries (logging, config, validation, AWS helpers, domain)
 scripts/          CLI tools (demo + DLQ replay)
+web/              React dashboard (incident list + actions + ingest)
 tests/            Jest tests (unit + integration stub)
 docs/             Architecture + future plans + this guide
 ```

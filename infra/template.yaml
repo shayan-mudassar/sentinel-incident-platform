@@ -5,13 +5,42 @@ Description: Sentinel - Event-Driven Incident & Reliability Platform
 Parameters:
   Stage:
     Type: String
-    Default: dev
-  CognitoUserPoolId:
+    Default: prod
+  CorsAllowOrigin:
+    Type: String
+    Default: '*'
+  AlarmEmail:
     Type: String
     Default: ''
+  SlackWorkspaceId:
+    Type: String
+    Default: ''
+  SlackChannelId:
+    Type: String
+    Default: ''
+  ApiLogRetentionDays:
+    Type: Number
+    Default: 30
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+  CognitoUserPoolId:
+    Type: String
+    Default: us-east-1_placeholder
 
 Conditions:
-  HasUserPool: !Not [!Equals [!Ref CognitoUserPoolId, '']]
+  HasSlack: !And
+    - !Not [!Equals [!Ref SlackWorkspaceId, '']]
+    - !Not [!Equals [!Ref SlackChannelId, '']]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  HasAlarmTarget: !Or [!Condition HasSlack, !Condition HasAlarmEmail]
+  IsProd: !Equals [!Ref Stage, 'prod']
+
+Rules:
+  RequireCognitoUserPoolId:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref CognitoUserPoolId, 'us-east-1_placeholder']]
+        AssertDescription: CognitoUserPoolId must be set to a real user pool id.
 
 Globals:
   Function:
@@ -34,8 +63,45 @@ Globals:
         RULES_TABLE_NAME: !Ref RulesTable
         DEDUP_WINDOW_MS: '300000'
         SEVERITY_WINDOW_MS: '300000'
+        PROCESSING_TIMEOUT_SECONDS: '120'
 
 Resources:
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/sentinel-${Stage}-access
+      RetentionInDays: !Ref ApiLogRetentionDays
+
+  IngestLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-ingest
+      RetentionInDays: !Ref LogRetentionDays
+
+  IncidentEngineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-incident-engine
+      RetentionInDays: !Ref LogRetentionDays
+
+  OutboxPublisherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-outbox-publisher
+      RetentionInDays: !Ref LogRetentionDays
+
+  NotificationWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-notification-worker
+      RetentionInDays: !Ref LogRetentionDays
+
+  IncidentApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-incident-api
+      RetentionInDays: !Ref LogRetentionDays
+
   SentinelApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -43,14 +109,23 @@ Resources:
       Cors:
         AllowMethods: "'GET,POST,OPTIONS'"
         AllowHeaders: "'authorization,content-type,x-correlation-id'"
-        AllowOrigin: "'*'"
-      Auth: !If
-        - HasUserPool
-        - DefaultAuthorizer: CognitoAuthorizer
-          Authorizers:
-            CognitoAuthorizer:
-              UserPoolArn: !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}
-        - !Ref AWS::NoValue
+        AllowOrigin: !Sub "'${CorsAllowOrigin}'"
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","caller":"$context.identity.caller","user":"$context.identity.user","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","integrationError":"$context.integrationErrorMessage"}
+      MethodSettings:
+        - LoggingLevel: INFO
+          DataTraceEnabled: false
+          MetricsEnabled: true
+          ResourcePath: "/*"
+          HttpMethod: "*"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}
 
   SentinelBus:
     Type: AWS::Events::EventBus
@@ -62,6 +137,7 @@ Resources:
     Properties:
       QueueName: !Sub sentinel-${Stage}-events-queue
       VisibilityTimeout: 30
+      SqsManagedSseEnabled: true
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt EventsDlq.Arn
         maxReceiveCount: 3
@@ -70,6 +146,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub sentinel-${Stage}-events-dlq
+      SqsManagedSseEnabled: true
       MessageRetentionPeriod: 1209600
 
   NotificationsQueue:
@@ -77,6 +154,7 @@ Resources:
     Properties:
       QueueName: !Sub sentinel-${Stage}-notifications-queue
       VisibilityTimeout: 30
+      SqsManagedSseEnabled: true
 
   EventsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -114,6 +192,261 @@ Resources:
               ArnEquals:
                 aws:SourceArn: !GetAtt IncidentChangedRule.Arn
 
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub sentinel-${Stage}-alarms
+
+  AlarmEmailSubscription:
+    Condition: HasAlarmEmail
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  ChatbotRole:
+    Condition: HasSlack
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub sentinel-${Stage}-chatbot
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: chatbot.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSChatbotServiceRolePolicy
+
+  SlackAlerts:
+    Condition: HasSlack
+    Type: AWS::Chatbot::SlackChannelConfiguration
+    Properties:
+      ConfigurationName: !Sub sentinel-${Stage}-alerts
+      SlackWorkspaceId: !Ref SlackWorkspaceId
+      SlackChannelId: !Ref SlackChannelId
+      IamRoleArn: !GetAtt ChatbotRole.Arn
+      SnsTopicArns:
+        - !Ref AlarmTopic
+      LoggingLevel: ERROR
+
+  SentinelWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub sentinel-${Stage}-web-acl
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub sentinel-${Stage}-web-acl
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 0
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub sentinel-${Stage}-waf-common
+            SampledRequestsEnabled: true
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub sentinel-${Stage}-waf-bad-inputs
+            SampledRequestsEnabled: true
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub sentinel-${Stage}-waf-sqli
+            SampledRequestsEnabled: true
+
+  SentinelWebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Sub arn:aws:apigateway:${AWS::Region}::/restapis/${SentinelApi}/stages/${Stage}
+      WebACLArn: !GetAtt SentinelWebAcl.Arn
+
+  EventsDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sentinel-${Stage}-events-dlq-visible
+      AlarmDescription: Events DLQ has messages ready for inspection.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt EventsDlq.QueueName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: !If [HasAlarmTarget, true, false]
+      AlarmActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  EventsQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sentinel-${Stage}-events-queue-age
+      AlarmDescription: Events queue oldest message age is high.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt EventsQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 300
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: !If [HasAlarmTarget, true, false]
+      AlarmActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  NotificationsQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sentinel-${Stage}-notifications-queue-age
+      AlarmDescription: Notifications queue oldest message age is high.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt NotificationsQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 300
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: !If [HasAlarmTarget, true, false]
+      AlarmActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  IngestErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sentinel-${Stage}-ingest-errors
+      AlarmDescription: Ingest lambda errors detected.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IngestFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: !If [HasAlarmTarget, true, false]
+      AlarmActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  IncidentEngineErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sentinel-${Stage}-incident-engine-errors
+      AlarmDescription: Incident engine lambda errors detected.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IncidentEngineFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: !If [HasAlarmTarget, true, false]
+      AlarmActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  OutboxPublisherErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sentinel-${Stage}-outbox-publisher-errors
+      AlarmDescription: Outbox publisher lambda errors detected.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref OutboxPublisherFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: !If [HasAlarmTarget, true, false]
+      AlarmActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  NotificationWorkerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sentinel-${Stage}-notification-worker-errors
+      AlarmDescription: Notification worker lambda errors detected.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref NotificationWorkerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: !If [HasAlarmTarget, true, false]
+      AlarmActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  IncidentApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sentinel-${Stage}-incident-api-errors
+      AlarmDescription: Incident API lambda errors detected.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IncidentApiFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: !If [HasAlarmTarget, true, false]
+      AlarmActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTarget, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
   IngestToQueueRule:
     Type: AWS::Events::Rule
     Properties:
@@ -143,6 +476,11 @@ Resources:
     Properties:
       TableName: !Sub sentinel-${Stage}-incidents
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
@@ -172,6 +510,11 @@ Resources:
     Properties:
       TableName: !Sub sentinel-${Stage}-event-state
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
@@ -191,6 +534,11 @@ Resources:
     Properties:
       TableName: !Sub sentinel-${Stage}-incident-events
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
@@ -210,6 +558,11 @@ Resources:
     Properties:
       TableName: !Sub sentinel-${Stage}-idempotency
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: eventId
           AttributeType: S
@@ -225,6 +578,11 @@ Resources:
     Properties:
       TableName: !Sub sentinel-${Stage}-outbox
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: outboxId
           AttributeType: S
@@ -253,6 +611,11 @@ Resources:
     Properties:
       TableName: !Sub sentinel-${Stage}-rules
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: ruleId
           AttributeType: S
@@ -461,6 +824,12 @@ Outputs:
   ApiUrl:
     Description: API Gateway endpoint URL
     Value: !Sub https://${SentinelApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}
+  AlarmTopicArn:
+    Description: SNS topic for operational alerts
+    Value: !Ref AlarmTopic
+  WebAclArn:
+    Description: WAF Web ACL protecting the API
+    Value: !GetAtt SentinelWebAcl.Arn
   EventsQueueUrl:
     Value: !Ref EventsQueue
   EventsDlqUrl:
