@@ -142,6 +142,32 @@ describe('incident engine handler', () => {
     expect(completeEventProcessing).toHaveBeenCalled();
   });
 
+  it('returns batch failure when tenantId is missing', async () => {
+    const response = await handler(
+      {
+        Records: [
+          {
+            messageId: 'msg-1',
+            body: JSON.stringify({ detail: { ...baseDetail, tenantId: undefined } })
+          }
+        ]
+      } as never,
+      { awsRequestId: 'r1' } as never
+    );
+
+    expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'msg-1' }]);
+    expect(startEventProcessing).not.toHaveBeenCalled();
+  });
+
+  it('skips processing on duplicate status', async () => {
+    startEventProcessing.mockResolvedValueOnce({ status: 'duplicate' });
+
+    await handler(makeSqsEvent() as never, { awsRequestId: 'r1' } as never);
+
+    expect(updateDedupState).not.toHaveBeenCalled();
+    expect(updateIncident).not.toHaveBeenCalled();
+  });
+
   it('updates existing incident and emits escalation outbox event', async () => {
     startEventProcessing.mockResolvedValueOnce({ status: 'new' });
     updateDedupState.mockResolvedValueOnce({
@@ -187,6 +213,97 @@ describe('incident engine handler', () => {
     const outboxDetail = putOutboxEvent.mock.calls[0][1].detail;
     expect(outboxDetail.changeType).toBe('ESCALATED');
     expect(updateActivePointer).toHaveBeenCalled();
+  });
+
+  it('suppressed events do not record incident events', async () => {
+    startEventProcessing.mockResolvedValueOnce({ status: 'new' });
+    updateDedupState.mockResolvedValueOnce({
+      count: 2,
+      windowStart: Date.now(),
+      lastSeen: new Date().toISOString(),
+      suppressed: true
+    });
+    updateSeverityState.mockResolvedValueOnce({
+      count: 2,
+      windowStart: Date.now(),
+      lastSeen: new Date().toISOString()
+    });
+    loadRules.mockResolvedValueOnce({
+      rules: [{ severity: 'low', threshold: 1, windowMs: 1000 }]
+    });
+    getActiveIncident.mockResolvedValueOnce({ incidentId: 'inc-3', status: 'OPEN', updatedAt: '2024-01-01T00:00:00.000Z' });
+    getIncidentById.mockResolvedValueOnce({
+      incidentId: 'inc-3',
+      tenantId: 'tenant-1',
+      status: 'OPEN',
+      source: 'service',
+      fingerprint: 'fp',
+      env: 'prod',
+      severity: 'low',
+      openedAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+      lastEventAt: '2024-01-01T00:00:00.000Z',
+      eventCount: 4,
+      version: 2
+    });
+    updateIncident.mockResolvedValueOnce(undefined);
+    updateActivePointer.mockResolvedValueOnce(undefined);
+    completeEventProcessing.mockResolvedValueOnce(undefined);
+
+    await handler(makeSqsEvent() as never, { awsRequestId: 'r1' } as never);
+
+    expect(recordIncidentEvent).not.toHaveBeenCalled();
+    const updateArgs = updateIncident.mock.calls[0][3];
+    expect(updateArgs.eventCount).toBe(4);
+    expect(incrementTenantMetric).toHaveBeenCalledWith('Metrics', 'tenant-1', 'deduped_total', 1);
+    expect(putOutboxEvent).not.toHaveBeenCalled();
+  });
+
+  it('marks failure when processing throws', async () => {
+    startEventProcessing.mockResolvedValueOnce({ status: 'new' });
+    updateDedupState.mockResolvedValueOnce({
+      count: 1,
+      windowStart: Date.now(),
+      lastSeen: new Date().toISOString(),
+      suppressed: false
+    });
+    updateSeverityState.mockResolvedValueOnce({
+      count: 1,
+      windowStart: Date.now(),
+      lastSeen: new Date().toISOString()
+    });
+    loadRules.mockResolvedValueOnce({
+      rules: [{ severity: 'low', threshold: 1, windowMs: 1000 }]
+    });
+    getActiveIncident.mockResolvedValueOnce({ incidentId: 'inc-4', status: 'OPEN', updatedAt: '2024-01-01T00:00:00.000Z' });
+    getIncidentById.mockResolvedValueOnce({
+      incidentId: 'inc-4',
+      tenantId: 'tenant-1',
+      status: 'OPEN',
+      source: 'service',
+      fingerprint: 'fp',
+      env: 'prod',
+      severity: 'low',
+      openedAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+      lastEventAt: '2024-01-01T00:00:00.000Z',
+      eventCount: 1,
+      version: 1
+    });
+    updateIncident.mockRejectedValueOnce(new Error('boom'));
+    failEventProcessing.mockResolvedValueOnce(undefined);
+
+    const response = await handler(makeSqsEvent() as never, { awsRequestId: 'r1' } as never);
+
+    expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'msg-1' }]);
+    expect(failEventProcessing).toHaveBeenCalledWith(
+      'EventState',
+      'tenant-1',
+      'evt-1',
+      60,
+      'Error: boom'
+    );
+    expect(completeEventProcessing).not.toHaveBeenCalled();
   });
 
   it('deletes pointer when incident missing and recreates', async () => {

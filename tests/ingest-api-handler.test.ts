@@ -51,6 +51,7 @@ jest.mock('@sentinel/dynamodb', () => ({
 }));
 
 const { validateIngestEvent } = require('@sentinel/schemas');
+const { incrementTenantMetric } = require('@sentinel/dynamodb');
 const { handler } = require('../services/ingest-api/src/handler');
 
 const baseEvent = {
@@ -158,5 +159,29 @@ describe('ingest api handler', () => {
     const payload = JSON.parse(response.body);
     expect(payload.accepted).toBe(true);
     expect(complete).toHaveBeenCalled();
+  });
+
+  it('includes tenant context and defaults in published detail', async () => {
+    validateIngestEvent.mockReturnValue({ valid: true, value: { ...baseEvent, attributes: {} } });
+    start.mockResolvedValueOnce({ started: true });
+    send.mockResolvedValueOnce({ FailedEntryCount: 0 });
+
+    const response = await handler(
+      makeApiEvent({ headers: { 'X-Tenant-Id': 'tenant-1', 'X-Correlation-Id': 'corr-1' } }) as never,
+      { awsRequestId: 'r1' } as never
+    );
+
+    expect(response.statusCode).toBe(200);
+    const command = send.mock.calls[0][0];
+    expect(command.input.Entries[0].EventBusName).toBe('bus');
+    expect(command.input.Entries[0].Source).toBe('sentinel.ingest');
+    expect(command.input.Entries[0].DetailType).toBe(baseEvent.type);
+
+    const detail = JSON.parse(command.input.Entries[0].Detail);
+    expect(detail.tenantId).toBe('tenant-1');
+    expect(detail.env).toBe('dev');
+    expect(detail.correlationId).toBe('corr-1');
+    expect(detail.receivedAt).toBeDefined();
+    expect(incrementTenantMetric).toHaveBeenCalledWith('Metrics', 'tenant-1', 'ingested_total', 1);
   });
 });
