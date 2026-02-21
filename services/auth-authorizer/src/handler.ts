@@ -1,5 +1,6 @@
-import { createRemoteJWKSet, jwtVerify } from 'jose';
-import type { APIGatewayTokenAuthorizerEvent, APIGatewayAuthorizerResult } from 'aws-lambda';
+import { CognitoJwtVerifier } from 'aws-jwt-verify';
+import type { CognitoJwtVerifierProperties, CognitoJwtVerifierSingleUserPool } from 'aws-jwt-verify/cognito-verifier';
+import type { APIGatewayAuthorizerResult, APIGatewayRequestAuthorizerEvent } from 'aws-lambda';
 
 type JwtPayload = {
   sub?: string;
@@ -9,17 +10,9 @@ type JwtPayload = {
   [key: string]: unknown;
 };
 
-const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+type CognitoVerifier = CognitoJwtVerifierSingleUserPool<CognitoJwtVerifierProperties>;
 
-const getJwks = (issuer: string) => {
-  const cached = jwksCache.get(issuer);
-  if (cached) {
-    return cached;
-  }
-  const jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
-  jwksCache.set(issuer, jwks);
-  return jwks;
-};
+const verifierCache = new Map<string, CognitoVerifier>();
 
 const parseMethodArn = (methodArn: string) => {
   const arnParts = methodArn.split(':');
@@ -30,11 +23,23 @@ const parseMethodArn = (methodArn: string) => {
   return { httpMethod, resourcePath };
 };
 
-const getBearerToken = (authorizationToken?: string | null) => {
-  if (!authorizationToken) {
+const getHeader = (headers: Record<string, string | undefined> | null | undefined, name: string) => {
+  if (!headers) {
     return null;
   }
-  const trimmed = authorizationToken.trim();
+  const key = Object.keys(headers).find((header) => header.toLowerCase() === name.toLowerCase());
+  if (!key) {
+    return null;
+  }
+  const value = headers[key];
+  return value?.trim() || null;
+};
+
+const getBearerToken = (authorizationHeader?: string | null) => {
+  if (!authorizationHeader) {
+    return null;
+  }
+  const trimmed = authorizationHeader.trim();
   if (!trimmed) {
     return null;
   }
@@ -64,33 +69,60 @@ const requiresAuth = (methodArn: string) => {
   return true;
 };
 
+const decodeTokenPayload = (token: string): JwtPayload => {
+  const parts = token.split('.');
+  if (parts.length < 2) {
+    throw new Error('invalid_token');
+  }
+  const payload = Buffer.from(parts[1], 'base64').toString('utf8');
+  const decoded = JSON.parse(payload);
+  return decoded as JwtPayload;
+};
+
+const getVerifier = (userPoolId: string, clientId: string | undefined, tokenUse: string) => {
+  const cacheKey = `${userPoolId}:${clientId || 'none'}:${tokenUse}`;
+  const cached = verifierCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const verifier = CognitoJwtVerifier.create({
+    userPoolId,
+    tokenUse: tokenUse as 'id' | 'access',
+    clientId: clientId ?? null
+  }) as CognitoVerifier;
+  verifierCache.set(cacheKey, verifier);
+  return verifier;
+};
+
 const verifyJwt = async (token: string): Promise<JwtPayload> => {
   const userPoolId = process.env.COGNITO_USER_POOL_ID?.trim();
   if (!userPoolId) {
     throw new Error('missing_user_pool');
   }
-
-  const region = process.env.AWS_REGION || 'us-east-1';
-  const issuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
-  const jwks = getJwks(issuer);
-  const { payload } = await jwtVerify(token, jwks, { issuer });
-
-  const tokenUse = payload.token_use;
+  const clientId = process.env.COGNITO_CLIENT_ID?.trim();
+  const decoded = decodeTokenPayload(token);
+  const tokenUse = decoded.token_use;
   if (tokenUse !== 'id' && tokenUse !== 'access') {
     throw new Error('invalid_token_use');
   }
-
-  const clientId = process.env.COGNITO_CLIENT_ID?.trim();
-  if (clientId) {
-    if (tokenUse === 'id' && payload.aud !== clientId) {
-      throw new Error('invalid_audience');
-    }
-    if (tokenUse === 'access' && payload.client_id !== clientId) {
-      throw new Error('invalid_client');
-    }
-  }
-
+  const verifier = getVerifier(userPoolId, clientId, tokenUse);
+  const payload = await verifier.verify(token, {
+    clientId: clientId ?? null,
+    tokenUse: tokenUse as 'id' | 'access'
+  });
   return payload as JwtPayload;
+};
+
+const getTenantClaim = (payload: JwtPayload) => {
+  const claimKey = process.env.TENANT_CLAIM_KEY?.trim() || 'custom:tenantId';
+  const claimValue = payload[claimKey];
+  if (typeof claimValue === 'string') {
+    return claimValue;
+  }
+  if (claimKey !== 'tenantId' && typeof payload.tenantId === 'string') {
+    return payload.tenantId;
+  }
+  return null;
 };
 
 const buildPolicy = (
@@ -113,7 +145,7 @@ const buildPolicy = (
   context
 });
 
-export const handler = async (event: APIGatewayTokenAuthorizerEvent) => {
+export const handler = async (event: APIGatewayRequestAuthorizerEvent) => {
   const stage = process.env.STAGE || 'dev';
   const userPoolId = process.env.COGNITO_USER_POOL_ID?.trim();
 
@@ -124,17 +156,28 @@ export const handler = async (event: APIGatewayTokenAuthorizerEvent) => {
     return buildPolicy('dev-anon', 'Allow', event.methodArn, { mode: 'dev' });
   }
 
-  if (!requiresAuth(event.methodArn)) {
+  const authRequired = requiresAuth(event.methodArn);
+  const authorizationHeader = getHeader(event.headers, 'authorization');
+  const token = getBearerToken(authorizationHeader);
+
+  if (!authRequired && !token) {
     return buildPolicy('optional-auth', 'Allow', event.methodArn, { mode: 'optional' });
   }
 
-  const token = getBearerToken(event.authorizationToken);
   if (!token) {
     throw new Error('Unauthorized');
   }
 
   try {
     const payload = await verifyJwt(token);
+    const tenantHeader = getHeader(event.headers, 'x-tenant-id');
+    if (!tenantHeader) {
+      throw new Error('missing_tenant');
+    }
+    const tenantClaim = getTenantClaim(payload);
+    if (!tenantClaim || tenantClaim !== tenantHeader) {
+      throw new Error('tenant_mismatch');
+    }
     const principalId = payload.sub || 'user';
     const context: Record<string, string> = {};
     if (typeof payload.sub === 'string') {
@@ -149,6 +192,7 @@ export const handler = async (event: APIGatewayTokenAuthorizerEvent) => {
     if (typeof payload.token_use === 'string') {
       context.tokenUse = payload.token_use;
     }
+    context.tenantId = tenantClaim;
 
     return buildPolicy(principalId, 'Allow', event.methodArn, context);
   } catch (error) {
