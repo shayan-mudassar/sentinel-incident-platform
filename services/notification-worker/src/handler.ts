@@ -1,17 +1,83 @@
 import { SQSEvent, SQSBatchResponse, Context } from 'aws-lambda';
+import { PublishCommand } from '@aws-sdk/client-sns';
+import { getConfig } from '@sentinel/config';
+import { getNotificationTargets } from '@sentinel/dynamodb';
+import { getSnsClient } from '@sentinel/aws';
 import { createLogger } from '@sentinel/logger';
+import { Severity } from '@sentinel/domain';
 
 export const handler = async (
   event: SQSEvent,
   context: Context
 ): Promise<SQSBatchResponse> => {
+  const config = getConfig();
   const logger = createLogger({ requestId: context.awsRequestId, service: 'notification-worker' });
   const failures: { itemIdentifier: string }[] = [];
+  const sns = getSnsClient();
 
   for (const record of event.Records) {
     try {
       const body = JSON.parse(record.body);
       const detail = body.detail || {};
+      const tenantId = detail.tenantId as string | undefined;
+      const severity = detail.severity as Severity | undefined;
+
+      if (!tenantId) {
+        throw new Error('missing_tenant_id');
+      }
+
+      if (!severity) {
+        throw new Error('missing_severity');
+      }
+
+      if (!config.notificationTargetsTableName) {
+        logger.warn('notification targets table not configured', { tenantId });
+      }
+
+      const targets = config.notificationTargetsTableName
+        ? await getNotificationTargets(config.notificationTargetsTableName, tenantId, severity)
+        : [];
+
+      const defaultTopic = process.env.DEFAULT_NOTIFICATION_TOPIC_ARN;
+      const effectiveTargets =
+        targets.length > 0
+          ? targets
+          : defaultTopic
+            ? [{ type: 'SNS' as const, topicArn: defaultTopic, label: 'default' }]
+            : [];
+
+      if (effectiveTargets.length === 0) {
+        logger.info('no notification targets for incident', { tenantId, severity });
+        continue;
+      }
+
+      const subject = `[Sentinel] ${detail.changeType} ${detail.severity?.toUpperCase?.() || detail.severity} ${detail.source}`;
+      const message = [
+        `Incident ${detail.changeType || 'UPDATED'} (${detail.status || 'UNKNOWN'})`,
+        `Tenant: ${tenantId}`,
+        `Severity: ${detail.severity || 'unknown'}`,
+        `Source: ${detail.source || 'unknown'}`,
+        `Env: ${detail.env || 'unknown'}`,
+        `Fingerprint: ${detail.fingerprint || 'unknown'}`,
+        `Incident ID: ${detail.incidentId || 'unknown'}`,
+        `Updated: ${detail.updatedAt || new Date().toISOString()}`,
+        `Correlation: ${detail.correlationId || 'n/a'}`
+      ].join('\n');
+
+      for (const target of effectiveTargets) {
+        await sns.send(
+          new PublishCommand({
+            TopicArn: target.topicArn,
+            Subject: subject,
+            Message: message,
+            MessageAttributes: {
+              tenantId: { DataType: 'String', StringValue: tenantId },
+              severity: { DataType: 'String', StringValue: severity },
+              status: { DataType: 'String', StringValue: detail.status || 'UNKNOWN' }
+            }
+          })
+        );
+      }
 
       logger.info('incident notification', {
         incidentId: detail.incidentId,
@@ -20,7 +86,8 @@ export const handler = async (
         status: detail.status,
         source: detail.source,
         fingerprint: detail.fingerprint,
-        correlationId: detail.correlationId
+        correlationId: detail.correlationId,
+        tenantId
       });
     } catch (error) {
       failures.push({ itemIdentifier: record.messageId });

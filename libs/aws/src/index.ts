@@ -3,6 +3,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { CloudWatchClient } from '@aws-sdk/client-cloudwatch';
+import { SNSClient } from '@aws-sdk/client-sns';
 import AWSXRay from 'aws-xray-sdk-core';
 
 const capture = <T extends object>(client: T): T => {
@@ -18,6 +19,7 @@ let docClient: DynamoDBDocumentClient | undefined;
 let eventBridgeClient: EventBridgeClient | undefined;
 let sqsClient: SQSClient | undefined;
 let cloudWatchClient: CloudWatchClient | undefined;
+let snsClient: SNSClient | undefined;
 
 export const getDynamoDbClient = (): DynamoDBClient => {
   if (!ddbClient) {
@@ -52,4 +54,11 @@ export const getCloudWatchClient = (): CloudWatchClient => {
     cloudWatchClient = capture(new CloudWatchClient({}));
   }
   return cloudWatchClient;
+};
+
+export const getSnsClient = (): SNSClient => {
+  if (!snsClient) {
+    snsClient = capture(new SNSClient({}));
+  }
+  return snsClient;
 };
