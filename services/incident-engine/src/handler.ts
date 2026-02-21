@@ -10,6 +10,7 @@ import {
   deleteActivePointer,
   getActiveIncident,
   getIncidentById,
+  incrementTenantMetric,
   recordIncidentEvent,
   startEventProcessing,
   updateActivePointer,
@@ -22,11 +23,11 @@ import {
 import { buildIncidentChangedDetail } from '@sentinel/events';
 import { IngestEvent, Incident, IncidentStatus, Severity, maxSeverity } from '@sentinel/domain';
 
-const severityFromHint = (hint?: Severity): Severity => {
+export const severityFromHint = (hint?: Severity): Severity => {
   return hint || 'low';
 };
 
-const evaluateSeverity = (
+export const evaluateSeverity = (
   hint: Severity | undefined,
   rules: Awaited<ReturnType<typeof loadRules>>,
   countsByWindow: Map<number, number>,
@@ -43,7 +44,9 @@ const evaluateSeverity = (
   return severity;
 };
 
-const parseRecord = (record: SQSRecord): IngestEvent & { env?: string; correlationId?: string } => {
+const parseRecord = (
+  record: SQSRecord
+): IngestEvent & { env?: string; correlationId?: string; tenantId?: string } => {
   const body = JSON.parse(record.body);
   return body.detail || body;
 };
@@ -55,13 +58,13 @@ export const handler = async (
   context: Context
 ): Promise<SQSBatchResponse> => {
   const config = getConfig();
-  const rules = await loadRules(config.rulesTableName);
   const logger = createLogger({ requestId: context.awsRequestId, service: 'incident-engine' });
+  const rulesCache = new Map<string, Awaited<ReturnType<typeof loadRules>>>();
   const failures: { itemIdentifier: string }[] = [];
 
   for (const record of event.Records) {
     try {
-      await processRecord(record, config, rules, logger);
+      await processRecord(record, config, logger, rulesCache);
     } catch (error) {
       failures.push({ itemIdentifier: record.messageId });
       logger.error('failed to process record', { error: String(error) });
@@ -74,10 +77,27 @@ export const handler = async (
 const processRecord = async (
   record: SQSRecord,
   config: ReturnType<typeof getConfig>,
-  rules: Awaited<ReturnType<typeof loadRules>>,
-  baseLogger: ReturnType<typeof createLogger>
+  baseLogger: ReturnType<typeof createLogger>,
+  rulesCache: Map<string, Awaited<ReturnType<typeof loadRules>>>
 ) => {
-  const detail = parseRecord(record) as IngestEvent & { env?: string; correlationId?: string };
+  const detail = parseRecord(record) as IngestEvent & {
+    env?: string;
+    correlationId?: string;
+    tenantId?: string;
+  };
+
+  if (!detail.tenantId) {
+    baseLogger.error('missing tenant id on event detail', { eventId: detail.eventId });
+    throw new Error('missing_tenant_id');
+  }
+
+  const tenantId = detail.tenantId;
+  const rules = rulesCache.get(tenantId) || (await loadRules(config.rulesTableName, tenantId));
+  if (!rulesCache.has(tenantId)) {
+    rulesCache.set(tenantId, rules);
+  }
+  const dedupWindowMs = rules.dedupWindowMs ?? config.dedupWindowMs;
+  const severityWindowMs = rules.severityWindowMs ?? config.severityWindowMs;
 
   const env = typeof detail.attributes?.env === 'string' ? (detail.attributes.env as string) : config.defaultEnv;
   const correlationId = detail.correlationId || detail.eventId;
@@ -85,11 +105,13 @@ const processRecord = async (
     correlationId,
     eventId: detail.eventId,
     source: detail.source,
-    fingerprint: detail.fingerprint
+    fingerprint: detail.fingerprint,
+    tenantId
   });
 
   const processing = await startEventProcessing(
     config.eventStateTableName,
+    tenantId,
     detail.eventId,
     config.eventStateTtlSeconds,
     config.processingTimeoutSeconds
@@ -109,10 +131,11 @@ const processRecord = async (
   try {
     const dedup = await updateDedupState(
       config.eventStateTableName,
+      tenantId,
       env,
       detail.source,
       detail.fingerprint,
-      config.dedupWindowMs,
+      dedupWindowMs,
       config.eventStateTtlSeconds
     );
 
@@ -120,25 +143,35 @@ const processRecord = async (
     if (suppressed) {
       emitMetrics('Sentinel', [{ name: 'events_deduplicated', unit: 'Count', value: 1 }], {
         service: 'incident-engine',
-        source: detail.source
+        source: detail.source,
+        tenantId
       });
+      if (config.metricsTableName) {
+        try {
+          await incrementTenantMetric(config.metricsTableName, tenantId, 'deduped_total', 1);
+        } catch (error) {
+          logger.warn('failed to update dedup metrics', { error: String(error) });
+        }
+      }
       logger.info('event suppressed by dedup', { count: dedup.count });
     }
 
     const processingLatencyMs = Date.now() - new Date(detail.timestamp).getTime();
     emitMetrics('Sentinel', [{ name: 'processing_latency_ms', unit: 'Milliseconds', value: processingLatencyMs }], {
       service: 'incident-engine',
-      source: detail.source
+      source: detail.source,
+      tenantId
     });
 
     const countsByWindow = new Map<number, number>();
     for (const rule of rules.rules) {
-      const windowMs = rule.windowMs || config.severityWindowMs;
+      const windowMs = rule.windowMs || severityWindowMs;
       if (countsByWindow.has(windowMs)) {
         continue;
       }
       const state = await updateSeverityState(
         config.eventStateTableName,
+        tenantId,
         env,
         detail.source,
         detail.fingerprint,
@@ -148,14 +181,15 @@ const processRecord = async (
       countsByWindow.set(windowMs, state.count);
     }
 
-    const incidentKey = buildIncidentKey(env, detail.source, detail.fingerprint);
-    const severity = evaluateSeverity(detail.severityHint, rules, countsByWindow, config.severityWindowMs);
+    const incidentKey = buildIncidentKey(tenantId, env, detail.source, detail.fingerprint);
+    const severity = evaluateSeverity(detail.severityHint, rules, countsByWindow, severityWindowMs);
 
     const openIncident = async () => {
       const incidentId = uuidv4();
       const now = new Date().toISOString();
       const incident: Incident = {
         incidentId,
+        tenantId,
         status: 'OPEN',
         source: detail.source,
         fingerprint: detail.fingerprint,
@@ -169,10 +203,18 @@ const processRecord = async (
       };
 
       try {
-        await createIncident(config.incidentsTableName, incident, env, detail.source, detail.fingerprint);
+        await createIncident(
+          config.incidentsTableName,
+          tenantId,
+          incident,
+          env,
+          detail.source,
+          detail.fingerprint
+        );
         if (!suppressed) {
           await recordIncidentEvent(
             config.incidentEventsTableName,
+            tenantId,
             incidentId,
             detail,
             config.incidentEventsTtlSeconds
@@ -190,7 +232,8 @@ const processRecord = async (
 
         emitMetrics('Sentinel', [{ name: 'incidents_opened', unit: 'Count', value: 1 }], {
           service: 'incident-engine',
-          source: detail.source
+          source: detail.source,
+          tenantId
         });
 
         logger.info('incident opened', { incidentId, incidentKey });
@@ -203,6 +246,7 @@ const processRecord = async (
 
     const active = await getActiveIncident(
       config.incidentsTableName,
+      tenantId,
       env,
       detail.source,
       detail.fingerprint
@@ -217,16 +261,16 @@ const processRecord = async (
     }
 
     const pointer = active ||
-      (await getActiveIncident(config.incidentsTableName, env, detail.source, detail.fingerprint));
+      (await getActiveIncident(config.incidentsTableName, tenantId, env, detail.source, detail.fingerprint));
 
     if (!pointer) {
       throw new Error('active pointer missing after create attempt');
     }
 
-    const incident = await getIncidentById(config.incidentsTableName, pointer.incidentId);
+    const incident = await getIncidentById(config.incidentsTableName, tenantId, pointer.incidentId);
     if (!incident) {
       logger.warn('incident state missing', { incidentId: pointer.incidentId });
-      await deleteActivePointer(config.incidentsTableName, env, detail.source, detail.fingerprint);
+      await deleteActivePointer(config.incidentsTableName, tenantId, env, detail.source, detail.fingerprint);
       const created = await openIncident();
       if (created) {
         succeeded = true;
@@ -242,6 +286,7 @@ const processRecord = async (
 
     await updateIncident(
       config.incidentsTableName,
+      tenantId,
       incident.incidentId,
       {
         status: incident.status,
@@ -259,18 +304,26 @@ const processRecord = async (
     if (shouldKeepActive(incident.status)) {
       await updateActivePointer(
         config.incidentsTableName,
+        tenantId,
         incident.env,
         incident.source,
         incident.fingerprint,
         incident.status
       );
     } else {
-      await deleteActivePointer(config.incidentsTableName, incident.env, incident.source, incident.fingerprint);
+      await deleteActivePointer(
+        config.incidentsTableName,
+        tenantId,
+        incident.env,
+        incident.source,
+        incident.fingerprint
+      );
     }
 
     if (!suppressed) {
       await recordIncidentEvent(
         config.incidentEventsTableName,
+        tenantId,
         incident.incidentId,
         detail,
         config.incidentEventsTtlSeconds
@@ -294,7 +347,8 @@ const processRecord = async (
 
       emitMetrics('Sentinel', [{ name: 'incidents_escalated', unit: 'Count', value: 1 }], {
         service: 'incident-engine',
-        source: detail.source
+        source: detail.source,
+        tenantId
       });
     }
 
@@ -308,6 +362,7 @@ const processRecord = async (
     try {
       await failEventProcessing(
         config.eventStateTableName,
+        tenantId,
         detail.eventId,
         config.eventStateTtlSeconds,
         String(error)
@@ -319,11 +374,12 @@ const processRecord = async (
   } finally {
     if (succeeded) {
       try {
-        await completeEventProcessing(
-          config.eventStateTableName,
-          detail.eventId,
-          config.eventStateTtlSeconds
-        );
+      await completeEventProcessing(
+        config.eventStateTableName,
+        tenantId,
+        detail.eventId,
+        config.eventStateTtlSeconds
+      );
       } catch (error) {
         logger.warn('failed to mark event processed', { error: String(error) });
       }

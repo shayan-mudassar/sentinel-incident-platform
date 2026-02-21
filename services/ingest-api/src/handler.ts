@@ -5,17 +5,9 @@ import { getConfig } from '@sentinel/config';
 import { createLogger } from '@sentinel/logger';
 import { emitMetrics } from '@sentinel/metrics';
 import { validateIngestEvent } from '@sentinel/schemas';
-import { createIdempotencyStore } from '@sentinel/idempotency';
-
-const buildResponse = (statusCode: number, body: Record<string, unknown>): APIGatewayProxyResult => {
-  return {
-    statusCode,
-    headers: {
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  };
-};
+import { buildIdempotencyKey, createIdempotencyStore } from '@sentinel/idempotency';
+import { incrementTenantMetric } from '@sentinel/dynamodb';
+import { buildError, buildResponse, hasAuthHeader, parseTenantId } from '@sentinel/http';
 
 export const handler = async (
   event: APIGatewayProxyEvent,
@@ -23,9 +15,18 @@ export const handler = async (
 ): Promise<APIGatewayProxyResult> => {
   const config = getConfig();
   const logger = createLogger({ requestId: context.awsRequestId });
+  const tenantId = parseTenantId(event.headers);
+
+  if (!tenantId) {
+    return buildError(400, 'validation_error', 'missing_tenant_id');
+  }
+
+  if (config.ingestAuthRequired && !hasAuthHeader(event.headers)) {
+    return buildError(401, 'auth_required', 'missing_authorization');
+  }
 
   if (!event.body) {
-    return buildResponse(400, { error: 'missing_body' });
+    return buildError(400, 'validation_error', 'missing_body');
   }
 
   let payload: unknown;
@@ -33,13 +34,13 @@ export const handler = async (
     payload = JSON.parse(event.body);
   } catch (error) {
     logger.warn('failed to parse event body', { error: String(error) });
-    return buildResponse(400, { error: 'invalid_json' });
+    return buildError(400, 'validation_error', 'invalid_json');
   }
 
   const validation = validateIngestEvent(payload);
   if (!validation.valid) {
     logger.info('event validation failed', { errors: validation.errors });
-    return buildResponse(400, { error: 'invalid_event', details: validation.errors });
+    return buildError(400, 'validation_error', 'invalid_event', validation.errors);
   }
 
   const ingestEvent = validation.value;
@@ -50,7 +51,8 @@ export const handler = async (
     correlationId,
     eventId: ingestEvent.eventId,
     source: ingestEvent.source,
-    fingerprint: ingestEvent.fingerprint
+    fingerprint: ingestEvent.fingerprint,
+    tenantId
   });
 
   const idempotency = createIdempotencyStore(
@@ -58,7 +60,11 @@ export const handler = async (
     config.idempotencyTtlSeconds
   );
 
-  const startResult = await idempotency.start(ingestEvent.eventId);
+  const idempotencyKey = buildIdempotencyKey(tenantId, ingestEvent.eventId);
+  const startResult = await idempotency.start(idempotencyKey, {
+    tenantId,
+    sourceEventId: ingestEvent.eventId
+  });
   if (!startResult.started) {
     const existing = startResult.record;
     const responseBody = existing?.response || {
@@ -78,7 +84,8 @@ export const handler = async (
     ...ingestEvent,
     env,
     receivedAt: new Date().toISOString(),
-    correlationId
+    correlationId,
+    tenantId
   };
 
   try {
@@ -98,8 +105,8 @@ export const handler = async (
 
     if (response.FailedEntryCount && response.FailedEntryCount > 0) {
       log.error('eventbridge put failed', { response });
-      await idempotency.fail(ingestEvent.eventId, 'eventbridge_put_failed');
-      return buildResponse(500, { error: 'publish_failed' });
+      await idempotency.fail(idempotencyKey, 'eventbridge_put_failed');
+      return buildError(500, 'internal_error', 'publish_failed');
     }
 
     const responseBody = {
@@ -108,19 +115,27 @@ export const handler = async (
       status: 'published'
     };
 
-    await idempotency.complete(ingestEvent.eventId, responseBody);
+    await idempotency.complete(idempotencyKey, responseBody);
 
     emitMetrics(
       'Sentinel',
       [{ name: 'events_ingested', unit: 'Count', value: 1 }],
-      { service: 'ingest-api', source: ingestEvent.source }
+      { service: 'ingest-api', source: ingestEvent.source, tenantId }
     );
+
+    if (config.metricsTableName) {
+      try {
+        await incrementTenantMetric(config.metricsTableName, tenantId, 'ingested_total', 1);
+      } catch (error) {
+        log.warn('failed to update ingest metrics', { error: String(error) });
+      }
+    }
 
     log.info('event ingested');
     return buildResponse(200, responseBody);
   } catch (error) {
     log.error('failed to publish event', { error: String(error) });
-    await idempotency.fail(ingestEvent.eventId, 'exception');
-    return buildResponse(500, { error: 'internal_error' });
+    await idempotency.fail(idempotencyKey, 'exception');
+    return buildError(500, 'internal_error', 'internal_error');
   }
 };
