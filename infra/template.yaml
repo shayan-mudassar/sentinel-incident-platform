@@ -42,6 +42,9 @@ Parameters:
   CognitoUserPoolId:
     Type: String
     Default: ''
+  CognitoClientId:
+    Type: String
+    Default: ''
 
 Conditions:
   HasSlack: !And
@@ -124,6 +127,12 @@ Resources:
       LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-notification-worker
       RetentionInDays: !Ref LogRetentionDays
 
+  AuthAuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-auth-authorizer
+      RetentionInDays: !Ref LogRetentionDays
+
   IncidentApiLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -151,6 +160,14 @@ Resources:
           HttpMethod: "*"
           ThrottlingBurstLimit: !Ref ApiThrottleBurstLimit
           ThrottlingRateLimit: !Ref ApiThrottleRateLimit
+      Auth:
+        DefaultAuthorizer: SentinelJwtAuthorizer
+        Authorizers:
+          SentinelJwtAuthorizer:
+            FunctionArn: !GetAtt AuthAuthorizerFunction.Arn
+            Identity:
+              Header: Authorization
+              ReauthorizeEvery: 300
 
   SentinelBus:
     Type: AWS::Events::EventBus
@@ -712,6 +729,26 @@ Resources:
       KeySchema:
         - AttributeName: ruleId
           KeyType: HASH
+
+  AuthAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub sentinel-${Stage}-auth-authorizer
+      CodeUri: ..
+      Handler: handler.handler
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_CLIENT_ID: !Ref CognitoClientId
+          INGEST_AUTH_REQUIRED: !If [IngestAuthEnabled, 'true', 'false']
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - services/auth-authorizer/src/handler.ts
+        Minify: false
+        Target: node20
+        Sourcemap: true
 
   IngestFunction:
     Type: AWS::Serverless::Function
