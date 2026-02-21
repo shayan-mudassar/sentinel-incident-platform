@@ -13,6 +13,7 @@ describe('incident api integration (stub)', () => {
       headers.authorization = `Bearer ${token}`;
     }
 
+    headers['X-Tenant-Id'] = process.env.INTEGRATION_TENANT_ID || 'demo';
     const response = await fetch(`${baseUrl}/v1/incidents?status=OPEN`, { headers });
     expect(response.status).toBeLessThan(500);
   });

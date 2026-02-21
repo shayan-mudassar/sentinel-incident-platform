@@ -27,7 +27,7 @@ describe('startEventProcessing', () => {
       return Promise.resolve({});
     });
 
-    const result = await startEventProcessing('table', 'evt-1', 300, 60);
+    const result = await startEventProcessing('table', 'tenant-1', 'evt-1', 300, 60);
     expect(result.status).toBe('duplicate');
   });
 
@@ -43,7 +43,7 @@ describe('startEventProcessing', () => {
       return Promise.resolve({});
     });
 
-    await expect(startEventProcessing('table', 'evt-2', 300, 60)).rejects.toThrow('boom');
+    await expect(startEventProcessing('table', 'tenant-1', 'evt-2', 300, 60)).rejects.toThrow('boom');
   });
 
   it('returns in_progress when processing lock is recent', async () => {
@@ -64,7 +64,7 @@ describe('startEventProcessing', () => {
       return Promise.resolve({});
     });
 
-    const result = await startEventProcessing('table', 'evt-3', 300, 300);
+    const result = await startEventProcessing('table', 'tenant-1', 'evt-3', 300, 300);
     expect(result.status).toBe('in_progress');
   });
 });

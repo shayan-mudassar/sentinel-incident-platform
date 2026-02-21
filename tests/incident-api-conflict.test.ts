@@ -12,7 +12,10 @@ jest.mock('@sentinel/config', () => ({
   getConfig: () => ({
     incidentsTableName: 'Incidents',
     outboxTableName: 'Outbox',
-    outboxTtlSeconds: 60
+    outboxTtlSeconds: 60,
+    incidentEventsTableName: 'IncidentEvents',
+    metricsTableName: 'Metrics',
+    authRequired: false
   })
 }));
 
@@ -37,6 +40,7 @@ describe('incident-api conflict handling', () => {
   it('returns 409 on conditional update conflict', async () => {
     const incident: Incident = {
       incidentId: 'inc-1',
+      tenantId: 'tenant-1',
       status: 'OPEN',
       source: 'service-a',
       fingerprint: 'HTTP_500_/checkout',
@@ -59,7 +63,7 @@ describe('incident-api conflict handling', () => {
       {
         httpMethod: 'POST',
         path: '/v1/incidents/inc-1/ack',
-        headers: {},
+        headers: { 'X-Tenant-Id': 'tenant-1' },
         body: null,
         isBase64Encoded: false
       } as never,
