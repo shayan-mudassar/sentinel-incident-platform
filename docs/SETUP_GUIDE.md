@@ -149,6 +149,7 @@ npm run load-test
 
 ```bash
 VITE_API_BASE_URL=http://localhost:3000 \
+VITE_TENANT_ID=demo \
 VITE_AUTH_TOKEN=<jwt> \
 npm run web:dev
 ```
@@ -191,7 +192,8 @@ CognitoUserPoolId=<user-pool-id>
 ## Using the UI
 
 - In the Connection panel, set **API Base URL** to the backend `ApiUrl`.
-- Paste a **JWT token** to access incidents (ACK/RESOLVE and list).
+- Set **Tenant ID** to route requests to the right tenant.
+- Paste a **JWT token** to access incidents (ACKED/RESOLVE and list).
 - Use **Ingest Event** to send test events.
 
 ## Tests and Validation

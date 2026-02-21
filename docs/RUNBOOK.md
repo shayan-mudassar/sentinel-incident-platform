@@ -5,12 +5,14 @@
 - CloudWatch alarms publish to SNS.
 - Slack alerts are delivered via AWS Chatbot when `SlackWorkspaceId` and `SlackChannelId` are set.
 - Optional email subscription via `AlarmEmail`.
+- Incident notifications publish to tenant-specific SNS topics (configured in `NotificationTargets`).
 
 ## Primary Alerts
 
 - **Events DLQ has messages**: `sentinel-<stage>-events-dlq-visible`
 - **Events queue age high**: `sentinel-<stage>-events-queue-age`
 - **Notifications queue age high**: `sentinel-<stage>-notifications-queue-age`
+- **Notifications DLQ has messages**: `sentinel-<stage>-notifications-dlq-visible`
 - **Lambda errors**: per-function error alarms
 
 ## Triage Checklist
@@ -29,9 +31,17 @@
 
 ## Incident Lifecycle
 
-- **ACK** when a responder has taken ownership.
+- **ACKED** when a responder has taken ownership.
 - **RESOLVE** once the root cause is addressed and impact has ended.
 - For failed resolves, re-open by sending a new event with the same fingerprint.
+
+## Notification Targets
+
+- Notifications are routed by `NotificationTargets` table items:
+  - `pk = TENANT#<tenantId>`
+  - `sk = SEVERITY#<severity>` or `SEVERITY#ALL`
+  - `targets = [{ type: \"SNS\", topicArn: \"arn:...\" }]`
+- Attach AWS Chatbot Slack configs or email subscriptions to the SNS topics.
 
 ## Disaster Recovery
 
