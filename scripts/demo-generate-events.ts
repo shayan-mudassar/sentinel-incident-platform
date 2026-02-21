@@ -4,10 +4,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3000';
 const authToken = process.env.AUTH_TOKEN;
+const tenantId = process.env.TENANT_ID || 'demo';
 
 const headers: Record<string, string> = {
   'content-type': 'application/json'
 };
+
+headers['X-Tenant-Id'] = tenantId;
 
 if (authToken) {
   headers.authorization = `Bearer ${authToken}`;

@@ -4,8 +4,10 @@ const url = process.env.LOAD_TEST_URL || 'http://localhost:3000/v1/incidents?sta
 const duration = Number(process.env.LOAD_TEST_DURATION || 30);
 const connections = Number(process.env.LOAD_TEST_CONNECTIONS || 10);
 const token = process.env.LOAD_TEST_AUTH_TOKEN;
+const tenantId = process.env.LOAD_TEST_TENANT_ID || 'demo';
 
 const headers: Record<string, string> = {};
+headers['X-Tenant-Id'] = tenantId;
 if (token) {
   headers.authorization = `Bearer ${token}`;
 }
