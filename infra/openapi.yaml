@@ -62,7 +62,7 @@ paths:
     get:
       summary: List incidents
       security:
-        - CognitoAuthorizer: []
+        - SentinelJwtAuthorizer: []
       parameters:
         - $ref: '#/components/parameters/TenantIdHeader'
         - in: query
@@ -131,7 +131,7 @@ paths:
     get:
       summary: Get incident by id
       security:
-        - CognitoAuthorizer: []
+        - SentinelJwtAuthorizer: []
       parameters:
         - $ref: '#/components/parameters/TenantIdHeader'
         - in: path
@@ -165,7 +165,7 @@ paths:
     get:
       summary: List incident timeline events
       security:
-        - CognitoAuthorizer: []
+        - SentinelJwtAuthorizer: []
       parameters:
         - $ref: '#/components/parameters/TenantIdHeader'
         - in: path
@@ -213,7 +213,7 @@ paths:
     post:
       summary: Acknowledge incident
       security:
-        - CognitoAuthorizer: []
+        - SentinelJwtAuthorizer: []
       parameters:
         - $ref: '#/components/parameters/TenantIdHeader'
         - in: path
@@ -263,7 +263,7 @@ paths:
     post:
       summary: Resolve incident
       security:
-        - CognitoAuthorizer: []
+        - SentinelJwtAuthorizer: []
       parameters:
         - $ref: '#/components/parameters/TenantIdHeader'
         - in: path
@@ -313,7 +313,7 @@ paths:
     get:
       summary: Get tenant metrics
       security:
-        - CognitoAuthorizer: []
+        - SentinelJwtAuthorizer: []
       parameters:
         - $ref: '#/components/parameters/TenantIdHeader'
       responses:
@@ -337,7 +337,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 components:
   securitySchemes:
-    CognitoAuthorizer:
+    SentinelJwtAuthorizer:
       type: http
       scheme: bearer
       bearerFormat: JWT

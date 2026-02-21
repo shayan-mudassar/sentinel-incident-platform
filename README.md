@@ -64,8 +64,9 @@ rule-based severity and routing, and emits notifications/actions with end-to-end
 ## Multi-tenancy & Auth
 
 - **Tenant isolation**: All APIs require `X-Tenant-Id` and store data under tenant-scoped keys.
-- **Auth enforcement**: If `CognitoUserPoolId` is set, JWT auth is enforced on incident APIs. In prod
-  (`Stage=prod`), Cognito is required. In non-prod, auth can be disabled for DEV-only use.
+- **Auth enforcement**: API Gateway uses a Lambda authorizer that verifies Cognito JWTs when
+  `CognitoUserPoolId` is set. In prod (`Stage=prod`), Cognito is required. In non-prod, auth can be
+  disabled for DEV-only use.
 - **Ingestion auth**: Use `IngestRequiresAuth=true` to require JWTs for `/v1/events`.
 
 ## Idempotency & Deduplication
@@ -150,13 +151,14 @@ Optional parameters:
 - `IncidentNotificationEmail` (optional; email for incident notifications)
 - `IngestRequiresAuth` (default: false; enforce JWT on `/v1/events`)
 - `ApiThrottleRateLimit` / `ApiThrottleBurstLimit` (API Gateway throttling)
+- `CognitoClientId` (optional but recommended; enforces token audience/client id checks)
 
 ## Local Dev
 
 ```bash
 npm install
 sam build -t infra/template.yaml
-sam local start-api -t infra/template.yaml --parameter-overrides CognitoUserPoolId=<user-pool-id>
+sam local start-api -t infra/template.yaml --parameter-overrides CognitoUserPoolId=<user-pool-id> CognitoClientId=<app-client-id>
 ```
 
 When running without Cognito in dev, set `Stage=dev` and omit `CognitoUserPoolId`.
