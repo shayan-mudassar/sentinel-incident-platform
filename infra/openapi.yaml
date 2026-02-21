@@ -16,8 +16,10 @@ paths:
   /v1/events:
     post:
       summary: Ingest an event
-      description: Validates and enqueues an operational event for correlation.
+      description: Validates and enqueues an operational event for correlation. Authorization is required when ingestion auth is enabled.
       security: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
       requestBody:
         required: true
         content:
@@ -40,14 +42,29 @@ paths:
                     type: string
         '400':
           description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Failed to publish
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/incidents:
     get:
       summary: List incidents
       security:
         - CognitoAuthorizer: []
       parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
         - in: query
           name: status
           schema:
@@ -58,6 +75,30 @@ paths:
             type: string
         - in: query
           name: env
+          schema:
+            type: string
+        - in: query
+          name: severity
+          schema:
+            $ref: '#/components/schemas/Severity'
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - in: query
+          name: nextToken
           schema:
             type: string
       responses:
@@ -72,12 +113,27 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Incident'
+                  nextToken:
+                    type: string
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/incidents/{incidentId}:
     get:
       summary: Get incident by id
       security:
         - CognitoAuthorizer: []
       parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
         - in: path
           name: incidentId
           required: true
@@ -95,12 +151,71 @@ paths:
                     $ref: '#/components/schemas/Incident'
         '404':
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/incidents/{incidentId}/events:
+    get:
+      summary: List incident timeline events
+      security:
+        - CognitoAuthorizer: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
+        - in: path
+          name: incidentId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - in: query
+          name: nextToken
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Incident event list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IncidentEvent'
+                  nextToken:
+                    type: string
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/incidents/{incidentId}/ack:
     post:
       summary: Acknowledge incident
       security:
         - CognitoAuthorizer: []
       parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
         - in: path
           name: incidentId
           required: true
@@ -109,12 +224,48 @@ paths:
       responses:
         '200':
           description: Acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  incidentId:
+                    type: string
+                  status:
+                    $ref: '#/components/schemas/IncidentStatus'
+                  idempotent:
+                    type: boolean
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/incidents/{incidentId}/resolve:
     post:
       summary: Resolve incident
       security:
         - CognitoAuthorizer: []
       parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
         - in: path
           name: incidentId
           required: true
@@ -123,19 +274,99 @@ paths:
       responses:
         '200':
           description: Resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  incidentId:
+                    type: string
+                  status:
+                    $ref: '#/components/schemas/IncidentStatus'
+                  idempotent:
+                    type: boolean
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/metrics:
+    get:
+      summary: Get tenant metrics
+      security:
+        - CognitoAuthorizer: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
+      responses:
+        '200':
+          description: Metrics response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: Metrics not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   securitySchemes:
     CognitoAuthorizer:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  parameters:
+    TenantIdHeader:
+      in: header
+      name: X-Tenant-Id
+      required: true
+      schema:
+        type: string
+      description: Tenant identifier for multi-tenant routing.
   schemas:
     Severity:
       type: string
       enum: [low, medium, high, critical]
     IncidentStatus:
       type: string
-      enum: [OPEN, ACK, RESOLVED]
+      enum: [OPEN, ACKED, RESOLVED]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
     IngestEvent:
       type: object
       required: [eventId, source, type, timestamp, fingerprint, attributes]
@@ -161,6 +392,8 @@ components:
       properties:
         incidentId:
           type: string
+        tenantId:
+          type: string
         status:
           $ref: '#/components/schemas/IncidentStatus'
         source:
@@ -184,3 +417,41 @@ components:
           type: integer
         version:
           type: integer
+    IncidentEvent:
+      type: object
+      properties:
+        eventId:
+          type: string
+        source:
+          type: string
+        type:
+          type: string
+        severityHint:
+          $ref: '#/components/schemas/Severity'
+        timestamp:
+          type: string
+          format: date-time
+        fingerprint:
+          type: string
+        attributes:
+          type: object
+          additionalProperties: true
+    MetricsResponse:
+      type: object
+      properties:
+        metrics:
+          type: object
+          properties:
+            ingested:
+              type: integer
+            deduped:
+              type: integer
+        updatedAt:
+          type: object
+          properties:
+            ingested:
+              type: string
+              format: date-time
+            deduped:
+              type: string
+              format: date-time

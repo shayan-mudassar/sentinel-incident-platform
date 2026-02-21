@@ -12,35 +12,57 @@ Parameters:
   AlarmEmail:
     Type: String
     Default: ''
+  IncidentNotificationEmail:
+    Type: String
+    Default: ''
   SlackWorkspaceId:
     Type: String
     Default: ''
   SlackChannelId:
     Type: String
     Default: ''
+  IngestRequiresAuth:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
   ApiLogRetentionDays:
     Type: Number
     Default: 30
+  ApiThrottleBurstLimit:
+    Type: Number
+    Default: 100
+  ApiThrottleRateLimit:
+    Type: Number
+    Default: 50
   LogRetentionDays:
     Type: Number
     Default: 30
   CognitoUserPoolId:
     Type: String
-    Default: us-east-1_placeholder
+    Default: ''
 
 Conditions:
   HasSlack: !And
     - !Not [!Equals [!Ref SlackWorkspaceId, '']]
     - !Not [!Equals [!Ref SlackChannelId, '']]
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  HasNotificationEmail: !Not [!Equals [!Ref IncidentNotificationEmail, '']]
   HasAlarmTarget: !Or [!Condition HasSlack, !Condition HasAlarmEmail]
   IsProd: !Equals [!Ref Stage, 'prod']
+  HasCognito: !Not [!Equals [!Ref CognitoUserPoolId, '']]
+  IngestAuthEnabled: !And
+    - !Condition HasCognito
+    - !Equals [!Ref IngestRequiresAuth, 'true']
 
 Rules:
-  RequireCognitoUserPoolId:
+  RequireCognitoInProd:
     Assertions:
-      - Assert: !Not [!Equals [!Ref CognitoUserPoolId, 'us-east-1_placeholder']]
-        AssertDescription: CognitoUserPoolId must be set to a real user pool id.
+      - Assert: !Or
+          - !Not [!Equals [!Ref Stage, 'prod']]
+          - !Not [!Equals [!Ref CognitoUserPoolId, '']]
+        AssertDescription: CognitoUserPoolId must be set for prod deployments.
 
 Globals:
   Function:
@@ -60,10 +82,16 @@ Globals:
         OUTBOX_TABLE_NAME: !Ref OutboxTable
         INCIDENT_EVENTS_TABLE_NAME: !Ref IncidentEventsTable
         IDEMPOTENCY_TABLE_NAME: !Ref IdempotencyTable
+        NOTIFICATION_TARGETS_TABLE_NAME: !Ref NotificationTargetsTable
+        METRICS_TABLE_NAME: !Ref MetricsTable
         RULES_TABLE_NAME: !Ref RulesTable
         DEDUP_WINDOW_MS: '300000'
         SEVERITY_WINDOW_MS: '300000'
         PROCESSING_TIMEOUT_SECONDS: '120'
+        IDEMPOTENCY_TTL_SECONDS: '604800'
+        EVENT_STATE_TTL_SECONDS: '604800'
+        OUTBOX_TTL_SECONDS: '604800'
+        INCIDENT_EVENTS_TTL_SECONDS: '604800'
 
 Resources:
   ApiAccessLogGroup:
@@ -108,7 +136,7 @@ Resources:
       StageName: !Ref Stage
       Cors:
         AllowMethods: "'GET,POST,OPTIONS'"
-        AllowHeaders: "'authorization,content-type,x-correlation-id'"
+        AllowHeaders: "'authorization,content-type,x-correlation-id,x-tenant-id'"
         AllowOrigin: !Sub "'${CorsAllowOrigin}'"
       TracingEnabled: true
       AccessLogSetting:
@@ -121,11 +149,15 @@ Resources:
           MetricsEnabled: true
           ResourcePath: "/*"
           HttpMethod: "*"
-      Auth:
-        DefaultAuthorizer: CognitoAuthorizer
-        Authorizers:
-          CognitoAuthorizer:
-            UserPoolArn: !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}
+          ThrottlingBurstLimit: !Ref ApiThrottleBurstLimit
+          ThrottlingRateLimit: !Ref ApiThrottleRateLimit
+      Auth: !If
+        - HasCognito
+        - DefaultAuthorizer: CognitoAuthorizer
+          Authorizers:
+            CognitoAuthorizer:
+              UserPoolArn: !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}
+        - DefaultAuthorizer: NONE
 
   SentinelBus:
     Type: AWS::Events::EventBus
@@ -155,6 +187,16 @@ Resources:
       QueueName: !Sub sentinel-${Stage}-notifications-queue
       VisibilityTimeout: 30
       SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NotificationsDlq.Arn
+        maxReceiveCount: 3
+
+  NotificationsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub sentinel-${Stage}-notifications-dlq
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
 
   EventsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -197,6 +239,11 @@ Resources:
     Properties:
       TopicName: !Sub sentinel-${Stage}-alarms
 
+  NotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub sentinel-${Stage}-notifications
+
   AlarmEmailSubscription:
     Condition: HasAlarmEmail
     Type: AWS::SNS::Subscription
@@ -204,6 +251,14 @@ Resources:
       TopicArn: !Ref AlarmTopic
       Protocol: email
       Endpoint: !Ref AlarmEmail
+
+  NotificationsEmailSubscription:
+    Condition: HasNotificationEmail
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationsTopic
+      Protocol: email
+      Endpoint: !Ref IncidentNotificationEmail
 
   ChatbotRole:
     Condition: HasSlack
@@ -553,6 +608,48 @@ Resources:
         AttributeName: expiresAt
         Enabled: true
 
+  NotificationTargetsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sentinel-${Stage}-notification-targets
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  MetricsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sentinel-${Stage}-metrics
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
   IdempotencyTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -629,9 +726,14 @@ Resources:
       FunctionName: !Sub sentinel-${Stage}-ingest
       CodeUri: ..
       Handler: handler.handler
+      Environment:
+        Variables:
+          INGEST_AUTH_REQUIRED: !If [IngestAuthEnabled, 'true', 'false']
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref IdempotencyTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetricsTable
         - EventBridgePutEventsPolicy:
             EventBusName: !Ref SentinelBus
       Events:
@@ -642,7 +744,7 @@ Resources:
             Path: /v1/events
             Method: POST
             Auth:
-              Authorizer: NONE
+              Authorizer: !If [IngestAuthEnabled, CognitoAuthorizer, NONE]
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -667,6 +769,8 @@ Resources:
             TableName: !Ref IncidentEventsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref OutboxTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetricsTable
         - DynamoDBReadPolicy:
             TableName: !Ref RulesTable
       Events:
@@ -717,6 +821,16 @@ Resources:
       FunctionName: !Sub sentinel-${Stage}-notification-worker
       CodeUri: ..
       Handler: handler.handler
+      Environment:
+        Variables:
+          DEFAULT_NOTIFICATION_TOPIC_ARN: !Ref NotificationsTopic
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref NotificationTargetsTable
+        - Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:sentinel-${Stage}-*
       Events:
         NotificationsQueue:
           Type: SQS
@@ -740,11 +854,18 @@ Resources:
       FunctionName: !Sub sentinel-${Stage}-incident-api
       CodeUri: ..
       Handler: handler.handler
+      Environment:
+        Variables:
+          AUTH_REQUIRED: !If [HasCognito, 'true', 'false']
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref IncidentsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref IncidentEventsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref OutboxTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref MetricsTable
       Events:
         ListIncidents:
           Type: Api
@@ -758,6 +879,12 @@ Resources:
             RestApiId: !Ref SentinelApi
             Path: /v1/incidents/{incidentId}
             Method: GET
+        GetIncidentEvents:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /v1/incidents/{incidentId}/events
+            Method: GET
         AckIncident:
           Type: Api
           Properties:
@@ -770,6 +897,12 @@ Resources:
             RestApiId: !Ref SentinelApi
             Path: /v1/incidents/{incidentId}/resolve
             Method: POST
+        GetMetrics:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /v1/metrics
+            Method: GET
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -836,3 +969,12 @@ Outputs:
     Value: !Ref EventsDlq
   NotificationsQueueUrl:
     Value: !Ref NotificationsQueue
+  NotificationsDlqUrl:
+    Value: !Ref NotificationsDlq
+  NotificationsTopicArn:
+    Description: SNS topic for incident notifications
+    Value: !Ref NotificationsTopic
+  NotificationTargetsTableName:
+    Value: !Ref NotificationTargetsTable
+  MetricsTableName:
+    Value: !Ref MetricsTable
