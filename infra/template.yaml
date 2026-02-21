@@ -151,13 +151,6 @@ Resources:
           HttpMethod: "*"
           ThrottlingBurstLimit: !Ref ApiThrottleBurstLimit
           ThrottlingRateLimit: !Ref ApiThrottleRateLimit
-      Auth: !If
-        - HasCognito
-        - DefaultAuthorizer: CognitoAuthorizer
-          Authorizers:
-            CognitoAuthorizer:
-              UserPoolArn: !Sub arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}
-        - DefaultAuthorizer: NONE
 
   SentinelBus:
     Type: AWS::Events::EventBus
@@ -743,8 +736,6 @@ Resources:
             RestApiId: !Ref SentinelApi
             Path: /v1/events
             Method: POST
-            Auth:
-              Authorizer: !If [IngestAuthEnabled, CognitoAuthorizer, NONE]
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
