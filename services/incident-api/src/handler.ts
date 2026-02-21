@@ -193,8 +193,8 @@ export const handler = async (
   }
 
   if (event.httpMethod === 'GET') {
-    const incidentId = parseIncidentEvents(event.path);
-    if (incidentId) {
+    const incidentIdFromEvents = parseIncidentEvents(event.path);
+    if (incidentIdFromEvents) {
       const limitRaw = event.queryStringParameters?.limit;
       const limit = limitRaw ? Number(limitRaw) : undefined;
       if (limitRaw && (!Number.isInteger(limit) || (limit || 0) <= 0 || (limit || 0) > 100)) {
@@ -207,7 +207,7 @@ export const handler = async (
 
       const result = await listIncidentEvents(config.incidentEventsTableName, {
         tenantId,
-        incidentId,
+        incidentId: incidentIdFromEvents,
         limit,
         nextToken
       });
@@ -217,12 +217,12 @@ export const handler = async (
       });
     }
 
-    const incidentId = parseIncidentId(event.path);
-    if (!incidentId) {
+    const incidentIdFromPath = parseIncidentId(event.path);
+    if (!incidentIdFromPath) {
       return buildError(404, 'not_found');
     }
 
-    const incident = await getIncidentById(config.incidentsTableName, tenantId, incidentId);
+    const incident = await getIncidentById(config.incidentsTableName, tenantId, incidentIdFromPath);
     if (!incident) {
       return buildError(404, 'not_found');
     }
