@@ -10,6 +10,8 @@ export type SeverityRule = {
 
 export type RulesConfig = {
   rules: SeverityRule[];
+  dedupWindowMs?: number;
+  severityWindowMs?: number;
 };
 
 export const defaultRules: RulesConfig = {
@@ -20,22 +22,41 @@ export const defaultRules: RulesConfig = {
   ]
 };
 
-export const loadRules = async (rulesTableName?: string): Promise<RulesConfig> => {
+const fetchRules = async (rulesTableName: string, ruleId: string): Promise<RulesConfig | undefined> => {
+  const client = getDynamoDbDocClient();
+  const response = await client.send(
+    new GetCommand({
+      TableName: rulesTableName,
+      Key: { ruleId }
+    })
+  );
+
+  if (response.Item && Array.isArray((response.Item as RulesConfig).rules)) {
+    return response.Item as RulesConfig;
+  }
+
+  return undefined;
+};
+
+export const loadRules = async (
+  rulesTableName?: string,
+  tenantId?: string
+): Promise<RulesConfig> => {
   if (!rulesTableName) {
     return defaultRules;
   }
 
-  const client = getDynamoDbDocClient();
   try {
-    const response = await client.send(
-      new GetCommand({
-        TableName: rulesTableName,
-        Key: { ruleId: 'default' }
-      })
-    );
+    if (tenantId) {
+      const tenantRules = await fetchRules(rulesTableName, `TENANT#${tenantId}`);
+      if (tenantRules) {
+        return tenantRules;
+      }
+    }
 
-    if (response.Item && Array.isArray((response.Item as RulesConfig).rules)) {
-      return response.Item as RulesConfig;
+    const defaultConfig = await fetchRules(rulesTableName, 'default');
+    if (defaultConfig) {
+      return defaultConfig;
     }
   } catch {
     return defaultRules;

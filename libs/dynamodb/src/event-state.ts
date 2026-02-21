@@ -20,18 +20,18 @@ export type SeverityState = {
   lastSeen: string;
 };
 
-const toDedupKey = (env: string, source: string, fingerprint: string) => ({
-  pk: `DEDUP#${env}#${source}#${fingerprint}`,
+const toDedupKey = (tenantId: string, env: string, source: string, fingerprint: string) => ({
+  pk: `TENANT#${tenantId}#DEDUP#${env}#${source}#${fingerprint}`,
   sk: 'WINDOW'
 });
 
-const toEventKey = (eventId: string) => ({
-  pk: `EVENT#${eventId}`,
+const toEventKey = (tenantId: string, eventId: string) => ({
+  pk: `TENANT#${tenantId}#EVENT#${eventId}`,
   sk: 'STATE'
 });
 
-const toSeverityKey = (env: string, source: string, fingerprint: string, windowMs: number) => ({
-  pk: `SEVERITY#${env}#${source}#${fingerprint}`,
+const toSeverityKey = (tenantId: string, env: string, source: string, fingerprint: string, windowMs: number) => ({
+  pk: `TENANT#${tenantId}#SEVERITY#${env}#${source}#${fingerprint}`,
   sk: `WINDOW#${windowMs}`
 });
 
@@ -46,13 +46,14 @@ const isConditionalCheckFailed = (error: unknown) => {
 
 export const markEventProcessed = async (
   tableName: string,
+  tenantId: string,
   eventId: string,
   ttlSeconds: number
 ): Promise<boolean> => {
   const client = getDynamoDbDocClient();
   const now = new Date();
   const expiresAt = Math.floor((now.getTime() + ttlSeconds * 1000) / 1000);
-  const key = toEventKey(eventId);
+  const key = toEventKey(tenantId, eventId);
 
   try {
     await client.send(
@@ -84,12 +85,12 @@ const readState = async (tableName: string, key: { pk: string; sk: string }) => 
   return response.Item as { windowStart?: number; count?: number } | undefined;
 };
 
-const readEventState = async (tableName: string, eventId: string) => {
+const readEventState = async (tableName: string, tenantId: string, eventId: string) => {
   const client = getDynamoDbDocClient();
   const response = await client.send(
     new GetCommand({
       TableName: tableName,
-      Key: toEventKey(eventId)
+      Key: toEventKey(tenantId, eventId)
     })
   );
   return response.Item as { status?: EventProcessingStatus; updatedAt?: string } | undefined;
@@ -97,6 +98,7 @@ const readEventState = async (tableName: string, eventId: string) => {
 
 export const updateDedupState = async (
   tableName: string,
+  tenantId: string,
   env: string,
   source: string,
   fingerprint: string,
@@ -104,7 +106,7 @@ export const updateDedupState = async (
   ttlSeconds: number
 ): Promise<DedupState> => {
   const client = getDynamoDbDocClient();
-  const key = toDedupKey(env, source, fingerprint);
+  const key = toDedupKey(tenantId, env, source, fingerprint);
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
   const expiresAt = Math.floor((now + ttlSeconds * 1000) / 1000);
@@ -228,6 +230,7 @@ export const updateDedupState = async (
 
 export const startEventProcessing = async (
   tableName: string,
+  tenantId: string,
   eventId: string,
   ttlSeconds: number,
   processingTimeoutSeconds: number
@@ -236,7 +239,7 @@ export const startEventProcessing = async (
   const now = new Date();
   const updatedAt = now.toISOString();
   const expiresAt = Math.floor((now.getTime() + ttlSeconds * 1000) / 1000);
-  const key = toEventKey(eventId);
+  const key = toEventKey(tenantId, eventId);
 
   try {
     await client.send(
@@ -258,7 +261,7 @@ export const startEventProcessing = async (
     }
   }
 
-  const existing = await readEventState(tableName, eventId);
+  const existing = await readEventState(tableName, tenantId, eventId);
   if (!existing) {
     return { status: 'retry' };
   }
@@ -299,6 +302,7 @@ export const startEventProcessing = async (
 
 export const completeEventProcessing = async (
   tableName: string,
+  tenantId: string,
   eventId: string,
   ttlSeconds: number
 ) => {
@@ -308,7 +312,7 @@ export const completeEventProcessing = async (
   await client.send(
     new UpdateCommand({
       TableName: tableName,
-      Key: toEventKey(eventId),
+      Key: toEventKey(tenantId, eventId),
       UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt, expiresAt = :expiresAt',
       ExpressionAttributeNames: {
         '#status': 'status'
@@ -324,6 +328,7 @@ export const completeEventProcessing = async (
 
 export const failEventProcessing = async (
   tableName: string,
+  tenantId: string,
   eventId: string,
   ttlSeconds: number,
   reason?: string
@@ -334,7 +339,7 @@ export const failEventProcessing = async (
   await client.send(
     new UpdateCommand({
       TableName: tableName,
-      Key: toEventKey(eventId),
+      Key: toEventKey(tenantId, eventId),
       UpdateExpression:
         'SET #status = :status, updatedAt = :updatedAt, expiresAt = :expiresAt, lastError = :lastError',
       ExpressionAttributeNames: {
@@ -352,6 +357,7 @@ export const failEventProcessing = async (
 
 export const updateSeverityState = async (
   tableName: string,
+  tenantId: string,
   env: string,
   source: string,
   fingerprint: string,
@@ -359,7 +365,7 @@ export const updateSeverityState = async (
   ttlSeconds: number
 ): Promise<SeverityState> => {
   const client = getDynamoDbDocClient();
-  const key = toSeverityKey(env, source, fingerprint, windowMs);
+  const key = toSeverityKey(tenantId, env, source, fingerprint, windowMs);
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
   const expiresAt = Math.floor((now + ttlSeconds * 1000) / 1000);

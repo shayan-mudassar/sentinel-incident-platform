@@ -9,6 +9,8 @@ export type SentinelConfig = {
   outboxTableName: string;
   incidentEventsTableName: string;
   idempotencyTableName: string;
+  notificationTargetsTableName?: string;
+  metricsTableName?: string;
   rulesTableName?: string;
   dedupWindowMs: number;
   severityWindowMs: number;
@@ -17,6 +19,8 @@ export type SentinelConfig = {
   processingTimeoutSeconds: number;
   outboxTtlSeconds: number;
   incidentEventsTtlSeconds: number;
+  authRequired: boolean;
+  ingestAuthRequired: boolean;
 };
 
 const numberFromEnv = (name: string, fallback: number) => {
@@ -29,6 +33,8 @@ const numberFromEnv = (name: string, fallback: number) => {
 };
 
 export const getConfig = (): SentinelConfig => {
+  const authRequiredRaw = process.env.AUTH_REQUIRED;
+  const ingestAuthRequiredRaw = process.env.INGEST_AUTH_REQUIRED;
   return {
     stage: process.env.STAGE || 'dev',
     defaultEnv: process.env.DEFAULT_ENV || 'dev',
@@ -40,6 +46,8 @@ export const getConfig = (): SentinelConfig => {
     outboxTableName: process.env.OUTBOX_TABLE_NAME || 'Outbox',
     incidentEventsTableName: process.env.INCIDENT_EVENTS_TABLE_NAME || 'IncidentEvents',
     idempotencyTableName: process.env.IDEMPOTENCY_TABLE_NAME || 'Idempotency',
+    notificationTargetsTableName: process.env.NOTIFICATION_TARGETS_TABLE_NAME,
+    metricsTableName: process.env.METRICS_TABLE_NAME,
     rulesTableName: process.env.RULES_TABLE_NAME,
     dedupWindowMs: numberFromEnv('DEDUP_WINDOW_MS', 5 * 60 * 1000),
     severityWindowMs: numberFromEnv('SEVERITY_WINDOW_MS', 5 * 60 * 1000),
@@ -47,7 +55,9 @@ export const getConfig = (): SentinelConfig => {
     eventStateTtlSeconds: numberFromEnv('EVENT_STATE_TTL_SECONDS', 7 * 24 * 60 * 60),
     processingTimeoutSeconds: numberFromEnv('PROCESSING_TIMEOUT_SECONDS', 120),
     outboxTtlSeconds: numberFromEnv('OUTBOX_TTL_SECONDS', 7 * 24 * 60 * 60),
-    incidentEventsTtlSeconds: numberFromEnv('INCIDENT_EVENTS_TTL_SECONDS', 7 * 24 * 60 * 60)
+    incidentEventsTtlSeconds: numberFromEnv('INCIDENT_EVENTS_TTL_SECONDS', 7 * 24 * 60 * 60),
+    authRequired: authRequiredRaw === 'true',
+    ingestAuthRequired: ingestAuthRequiredRaw === 'true'
   };
 };
 

@@ -4,6 +4,7 @@ export type IncidentChangeType = 'OPENED' | 'ESCALATED' | 'ACKED' | 'RESOLVED' |
 
 export type IncidentChangedDetail = {
   incidentId: string;
+  tenantId: string;
   changeType: IncidentChangeType;
   status: IncidentStatus;
   severity: Severity;
@@ -21,6 +22,7 @@ export const buildIncidentChangedDetail = (
 ): IncidentChangedDetail => {
   return {
     incidentId: incident.incidentId,
+    tenantId: incident.tenantId,
     changeType,
     status: incident.status,
     severity: incident.severity,

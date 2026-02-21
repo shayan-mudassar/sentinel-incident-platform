@@ -5,6 +5,8 @@ export type IdempotencyStatus = 'PROCESSING' | 'COMPLETED' | 'FAILED';
 
 export type IdempotencyRecord = {
   eventId: string;
+  tenantId?: string;
+  sourceEventId?: string;
   status: IdempotencyStatus;
   response?: Record<string, unknown>;
   createdAt: string;
@@ -15,6 +17,10 @@ export type IdempotencyRecord = {
 export type IdempotencyStartResult = {
   started: boolean;
   record?: IdempotencyRecord;
+};
+
+export const buildIdempotencyKey = (tenantId: string, eventId: string) => {
+  return `TENANT#${tenantId}#EVENT#${eventId}`;
 };
 
 export const createIdempotencyStore = (tableName: string, ttlSeconds: number) => {
@@ -30,7 +36,10 @@ export const createIdempotencyStore = (tableName: string, ttlSeconds: number) =>
     return response.Item as IdempotencyRecord | undefined;
   };
 
-  const start = async (eventId: string): Promise<IdempotencyStartResult> => {
+  const start = async (
+    eventId: string,
+    attributes?: { tenantId?: string; sourceEventId?: string }
+  ): Promise<IdempotencyStartResult> => {
     const now = new Date();
     const expiresAt = Math.floor((now.getTime() + ttlSeconds * 1000) / 1000);
 
@@ -40,6 +49,8 @@ export const createIdempotencyStore = (tableName: string, ttlSeconds: number) =>
           TableName: tableName,
           Item: {
             eventId,
+            tenantId: attributes?.tenantId,
+            sourceEventId: attributes?.sourceEventId,
             status: 'PROCESSING',
             createdAt: now.toISOString(),
             expiresAt

@@ -8,15 +8,21 @@ import {
 import { getDynamoDbDocClient } from '@sentinel/aws';
 import { Incident, IncidentStatus, Severity } from '@sentinel/domain';
 
-export const buildIncidentKey = (env: string, source: string, fingerprint: string) => {
-  return `INCIDENTKEY#${env}#${source}#${fingerprint}`;
+export const buildIncidentKey = (tenantId: string, env: string, source: string, fingerprint: string) => {
+  return `TENANT#${tenantId}#INCIDENTKEY#${env}#${source}#${fingerprint}`;
 };
 
-const buildIncidentPk = (incidentId: string) => `INCIDENT#${incidentId}`;
+const buildIncidentPk = (tenantId: string, incidentId: string) => `TENANT#${tenantId}#INCIDENT#${incidentId}`;
 
-const buildStatusIndex = (status: IncidentStatus, source: string, env: string, updatedAt: string) => {
+const buildStatusIndex = (
+  tenantId: string,
+  status: IncidentStatus,
+  source: string,
+  env: string,
+  updatedAt: string
+) => {
   return {
-    gsi1pk: `STATUS#${status}`,
+    gsi1pk: `TENANT#${tenantId}#STATUS#${status}`,
     gsi1sk: `SOURCE#${source}#ENV#${env}#UPDATED#${updatedAt}`
   };
 };
@@ -29,12 +35,13 @@ export type ActiveIncidentPointer = {
 
 export const getActiveIncident = async (
   tableName: string,
+  tenantId: string,
   env: string,
   source: string,
   fingerprint: string
 ): Promise<ActiveIncidentPointer | undefined> => {
   const client = getDynamoDbDocClient();
-  const key = { pk: buildIncidentKey(env, source, fingerprint), sk: 'ACTIVE' };
+  const key = { pk: buildIncidentKey(tenantId, env, source, fingerprint), sk: 'ACTIVE' };
   const response = await client.send(
     new GetCommand({
       TableName: tableName,
@@ -46,29 +53,69 @@ export const getActiveIncident = async (
 
 export const getIncidentById = async (
   tableName: string,
+  tenantId: string,
   incidentId: string
 ): Promise<Incident | undefined> => {
   const client = getDynamoDbDocClient();
   const response = await client.send(
     new GetCommand({
       TableName: tableName,
-      Key: { pk: buildIncidentPk(incidentId), sk: 'STATE' }
+      Key: { pk: buildIncidentPk(tenantId, incidentId), sk: 'STATE' }
     })
   );
   return response.Item as Incident | undefined;
 };
 
+export type ListIncidentsOptions = {
+  tenantId: string;
+  status: IncidentStatus;
+  source?: string;
+  env?: string;
+  severity?: Severity;
+  from?: string;
+  to?: string;
+  limit?: number;
+  nextToken?: Record<string, unknown>;
+};
+
+export type ListIncidentsResult = {
+  items: Incident[];
+  nextToken?: Record<string, unknown>;
+};
+
 export const listIncidents = async (
   tableName: string,
-  status: IncidentStatus,
-  source?: string,
-  env?: string,
-  limit = 50
-): Promise<Incident[]> => {
+  options: ListIncidentsOptions
+): Promise<ListIncidentsResult> => {
   const client = getDynamoDbDocClient();
-  const sourcePrefix = source ? `SOURCE#${source}` : 'SOURCE#';
-  const envFragment = env ? `#ENV#${env}` : '';
-  const skPrefix = `${sourcePrefix}${envFragment}`;
+  const skPrefix = options.source ? `SOURCE#${options.source}` : 'SOURCE#';
+  const limit = options.limit || 50;
+
+  const filterExpressions: string[] = [];
+  const expressionAttributeValues: Record<string, unknown> = {
+    ':pk': `TENANT#${options.tenantId}#STATUS#${options.status}`,
+    ':sk': skPrefix
+  };
+
+  if (options.severity) {
+    filterExpressions.push('severity = :severity');
+    expressionAttributeValues[':severity'] = options.severity;
+  }
+
+  if (options.env) {
+    filterExpressions.push('env = :env');
+    expressionAttributeValues[':env'] = options.env;
+  }
+
+  if (options.from) {
+    filterExpressions.push('updatedAt >= :from');
+    expressionAttributeValues[':from'] = options.from;
+  }
+
+  if (options.to) {
+    filterExpressions.push('updatedAt <= :to');
+    expressionAttributeValues[':to'] = options.to;
+  }
 
   const response = await client.send(
     new QueryCommand({
@@ -79,20 +126,23 @@ export const listIncidents = async (
         '#pk': 'gsi1pk',
         '#sk': 'gsi1sk'
       },
-      ExpressionAttributeValues: {
-        ':pk': `STATUS#${status}`,
-        ':sk': skPrefix
-      },
+      ExpressionAttributeValues: expressionAttributeValues,
+      FilterExpression: filterExpressions.length > 0 ? filterExpressions.join(' AND ') : undefined,
+      ExclusiveStartKey: options.nextToken,
       Limit: limit,
       ScanIndexForward: false
     })
   );
 
-  return (response.Items || []) as Incident[];
+  return {
+    items: (response.Items || []) as Incident[],
+    nextToken: response.LastEvaluatedKey
+  };
 };
 
 export const createIncident = async (
   tableName: string,
+  tenantId: string,
   incident: Incident,
   env: string,
   source: string,
@@ -100,15 +150,15 @@ export const createIncident = async (
 ) => {
   const client = getDynamoDbDocClient();
   const now = incident.updatedAt;
-  const statusIndex = buildStatusIndex(incident.status, source, env, now);
+  const statusIndex = buildStatusIndex(tenantId, incident.status, source, env, now);
   const incidentItem = {
     ...incident,
-    pk: buildIncidentPk(incident.incidentId),
+    pk: buildIncidentPk(tenantId, incident.incidentId),
     sk: 'STATE',
     ...statusIndex
   };
   const pointerItem: ActiveIncidentPointer & { pk: string; sk: string } = {
-    pk: buildIncidentKey(env, source, fingerprint),
+    pk: buildIncidentKey(tenantId, env, source, fingerprint),
     sk: 'ACTIVE',
     incidentId: incident.incidentId,
     status: incident.status,
@@ -144,6 +194,7 @@ export const createIncident = async (
 
 export const updateIncident = async (
   tableName: string,
+  tenantId: string,
   incidentId: string,
   updates: {
     status: IncidentStatus;
@@ -158,12 +209,12 @@ export const updateIncident = async (
   expectedVersion: number
 ) => {
   const client = getDynamoDbDocClient();
-  const statusIndex = buildStatusIndex(updates.status, updates.source, updates.env, updates.updatedAt);
+  const statusIndex = buildStatusIndex(tenantId, updates.status, updates.source, updates.env, updates.updatedAt);
 
   await client.send(
     new UpdateCommand({
       TableName: tableName,
-      Key: { pk: buildIncidentPk(incidentId), sk: 'STATE' },
+      Key: { pk: buildIncidentPk(tenantId, incidentId), sk: 'STATE' },
       UpdateExpression:
         'SET #status = :status, severity = :severity, lastEventAt = :lastEventAt, updatedAt = :updatedAt, eventCount = :eventCount, version = :version, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk',
       ExpressionAttributeNames: {
@@ -187,6 +238,7 @@ export const updateIncident = async (
 
 export const updateActivePointer = async (
   tableName: string,
+  tenantId: string,
   env: string,
   source: string,
   fingerprint: string,
@@ -196,7 +248,7 @@ export const updateActivePointer = async (
   await client.send(
     new UpdateCommand({
       TableName: tableName,
-      Key: { pk: buildIncidentKey(env, source, fingerprint), sk: 'ACTIVE' },
+      Key: { pk: buildIncidentKey(tenantId, env, source, fingerprint), sk: 'ACTIVE' },
       UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
       ExpressionAttributeNames: {
         '#status': 'status'
@@ -212,6 +264,7 @@ export const updateActivePointer = async (
 
 export const deleteActivePointer = async (
   tableName: string,
+  tenantId: string,
   env: string,
   source: string,
   fingerprint: string
@@ -220,7 +273,7 @@ export const deleteActivePointer = async (
   await client.send(
     new DeleteCommand({
       TableName: tableName,
-      Key: { pk: buildIncidentKey(env, source, fingerprint), sk: 'ACTIVE' }
+      Key: { pk: buildIncidentKey(tenantId, env, source, fingerprint), sk: 'ACTIVE' }
     })
   );
 };
