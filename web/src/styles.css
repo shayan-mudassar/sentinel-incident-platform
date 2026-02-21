@@ -340,7 +340,7 @@ h1 {
   color: #215fa4;
 }
 
-.badge.status.ack {
+.badge.status.acked {
   background: rgba(29, 111, 74, 0.15);
   color: #1d6f4a;
 }
@@ -398,6 +398,65 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.metric-label {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.metric-value {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.metric-meta {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.timeline-list {
+  display: grid;
+  gap: 12px;
+}
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: minmax(120px, 140px) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+}
+
+.timeline-time {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.timeline-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.timeline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .row {
   display: flex;
   gap: 10px;
@@ -446,5 +505,8 @@ h1 {
   .row {
     flex-direction: column;
     align-items: stretch;
+  }
+  .timeline-item {
+    grid-template-columns: 1fr;
   }
 }

@@ -3,18 +3,21 @@ import {
   ApiRequestError,
   ackIncident,
   getIncident,
+  getMetrics,
   ingestEvent,
+  listIncidentEvents,
   listIncidents,
   normalizeBaseUrl,
   resolveIncident
 } from './api';
-import type { Incident, IncidentStatus, Severity } from './types';
+import type { Incident, IncidentEvent, IncidentStatus, Severity } from './types';
 import { formatDate, labelForSeverity, labelForStatus } from './utils';
 
 const STORAGE_BASE_URL = 'sentinel.baseUrl';
 const STORAGE_TOKEN = 'sentinel.token';
+const STORAGE_TENANT = 'sentinel.tenantId';
 
-const STATUS_OPTIONS: IncidentStatus[] = ['OPEN', 'ACK', 'RESOLVED'];
+const STATUS_OPTIONS: IncidentStatus[] = ['OPEN', 'ACKED', 'RESOLVED'];
 const SEVERITY_OPTIONS: Severity[] = ['low', 'medium', 'high', 'critical'];
 
 const createEventId = () => {
@@ -35,6 +38,9 @@ const App = () => {
   const [token, setToken] = useState(() => {
     return localStorage.getItem(STORAGE_TOKEN) || import.meta.env.VITE_AUTH_TOKEN || '';
   });
+  const [tenantId, setTenantId] = useState(() => {
+    return localStorage.getItem(STORAGE_TENANT) || import.meta.env.VITE_TENANT_ID || 'demo';
+  });
 
   const [statusFilter, setStatusFilter] = useState<IncidentStatus>('OPEN');
   const [sourceFilter, setSourceFilter] = useState('');
@@ -43,12 +49,19 @@ const App = () => {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(null);
+  const [incidentEvents, setIncidentEvents] = useState<IncidentEvent[]>([]);
+  const [eventsNextToken, setEventsNextToken] = useState<string | null>(null);
 
   const [listLoading, setListLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [eventsLoading, setEventsLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metrics, setMetrics] = useState<{ ingested: number; deduped: number } | null>(null);
+  const [metricsUpdatedAt, setMetricsUpdatedAt] = useState<{ ingested?: string; deduped?: string } | null>(null);
 
   const [eventId, setEventId] = useState(createEventId);
   const [eventSource, setEventSource] = useState('service-a');
@@ -63,8 +76,12 @@ const App = () => {
   const [ingestResult, setIngestResult] = useState<string | null>(null);
 
   const apiConfig = useMemo(() => {
-    return { baseUrl: normalizeBaseUrl(baseUrl), token: token || undefined };
-  }, [baseUrl, token]);
+    return {
+      baseUrl: normalizeBaseUrl(baseUrl),
+      token: token || undefined,
+      tenantId: tenantId || 'demo'
+    };
+  }, [baseUrl, token, tenantId]);
 
   const formatError = (err: unknown) => {
     if (err instanceof ApiRequestError) {
@@ -88,6 +105,14 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem(STORAGE_BASE_URL, baseUrl);
   }, [baseUrl]);
+
+  useEffect(() => {
+    if (tenantId) {
+      localStorage.setItem(STORAGE_TENANT, tenantId);
+      return;
+    }
+    localStorage.removeItem(STORAGE_TENANT);
+  }, [tenantId]);
 
   useEffect(() => {
     if (token) {
@@ -131,17 +156,60 @@ const App = () => {
     [apiConfig]
   );
 
+  const loadIncidentEvents = useCallback(
+    async (incidentId: string, nextToken?: string) => {
+      setEventsLoading(true);
+      try {
+        const response = await listIncidentEvents(apiConfig, incidentId, 25, nextToken);
+        setIncidentEvents((current) => (nextToken ? [...current, ...response.items] : response.items));
+        setEventsNextToken(response.nextToken || null);
+      } catch (err) {
+        setError(formatError(err));
+      } finally {
+        setEventsLoading(false);
+      }
+    },
+    [apiConfig]
+  );
+
+  const loadMetrics = useCallback(async () => {
+    setMetricsLoading(true);
+    try {
+      const response = await getMetrics(apiConfig);
+      setMetrics(response.metrics);
+      setMetricsUpdatedAt(response.updatedAt || null);
+    } catch {
+      setMetrics(null);
+      setMetricsUpdatedAt(null);
+    } finally {
+      setMetricsLoading(false);
+    }
+  }, [apiConfig]);
+
   useEffect(() => {
     loadIncidents();
   }, [loadIncidents]);
 
   useEffect(() => {
+    loadMetrics();
+  }, [loadMetrics]);
+
+  useEffect(() => {
+    setSelectedId(null);
+  }, [tenantId]);
+
+  useEffect(() => {
     if (!selectedId) {
       setSelectedIncident(null);
+      setIncidentEvents([]);
+      setEventsNextToken(null);
       return;
     }
+    setIncidentEvents([]);
+    setEventsNextToken(null);
     loadIncidentDetail(selectedId);
-  }, [selectedId, loadIncidentDetail]);
+    loadIncidentEvents(selectedId);
+  }, [selectedId, loadIncidentDetail, loadIncidentEvents]);
 
   const handleAck = async () => {
     if (!selectedIncident) {
@@ -154,6 +222,7 @@ const App = () => {
       setBanner('Incident acknowledged.');
       await loadIncidents();
       await loadIncidentDetail(selectedIncident.incidentId);
+      await loadIncidentEvents(selectedIncident.incidentId);
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -172,6 +241,7 @@ const App = () => {
       setBanner('Incident resolved.');
       await loadIncidents();
       await loadIncidentDetail(selectedIncident.incidentId);
+      await loadIncidentEvents(selectedIncident.incidentId);
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -208,6 +278,7 @@ const App = () => {
       const response = await ingestEvent(apiConfig, payload);
       setIngestResult(`Accepted ${response.eventId || eventId} (${response.status || 'queued'})`);
       setEventId(createEventId());
+      await loadMetrics();
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -245,6 +316,14 @@ const App = () => {
               onChange={(event) => setBaseUrl(event.target.value)}
               onBlur={handleBaseUrlBlur}
               placeholder="https://api.example.com/prod"
+            />
+          </label>
+          <label className="field">
+            <span>Tenant ID</span>
+            <input
+              value={tenantId}
+              onChange={(event) => setTenantId(event.target.value)}
+              placeholder="demo"
             />
           </label>
           <label className="field">
@@ -334,6 +413,33 @@ const App = () => {
         </section>
 
         <section className="stack">
+          <div className="panel metrics">
+            <div className="panel-title">Metrics</div>
+            <div className="metric-grid">
+              <div>
+                <div className="metric-label">Ingested</div>
+                <div className="metric-value">
+                  {metricsLoading ? 'Loading…' : metrics ? metrics.ingested : '—'}
+                </div>
+                {metricsUpdatedAt?.ingested ? (
+                  <div className="metric-meta">Updated {formatDate(metricsUpdatedAt.ingested)}</div>
+                ) : null}
+              </div>
+              <div>
+                <div className="metric-label">Deduped</div>
+                <div className="metric-value">
+                  {metricsLoading ? 'Loading…' : metrics ? metrics.deduped : '—'}
+                </div>
+                {metricsUpdatedAt?.deduped ? (
+                  <div className="metric-meta">Updated {formatDate(metricsUpdatedAt.deduped)}</div>
+                ) : null}
+              </div>
+            </div>
+            {!metrics && !metricsLoading ? (
+              <div className="helper">Metrics unavailable for this tenant.</div>
+            ) : null}
+          </div>
+
           <div className="panel detail">
             <div className="panel-title">Incident Detail</div>
             {!selectedIncident && !detailLoading ? (
@@ -387,7 +493,13 @@ const App = () => {
             <div className="actions">
               <button
                 className="button ghost"
-                onClick={() => selectedId && loadIncidentDetail(selectedId)}
+                onClick={() => {
+                  if (!selectedId) {
+                    return;
+                  }
+                  loadIncidentDetail(selectedId);
+                  loadIncidentEvents(selectedId);
+                }}
                 disabled={!selectedId || detailLoading}
               >
                 Refresh detail
@@ -407,6 +519,47 @@ const App = () => {
                 Resolve
               </button>
             </div>
+          </div>
+
+          <div className="panel timeline">
+            <div className="panel-title">Timeline</div>
+            {!selectedIncident && !eventsLoading ? (
+              <div className="empty">Select an incident to view its timeline.</div>
+            ) : null}
+            {eventsLoading ? <div className="empty">Loading timeline…</div> : null}
+            {!eventsLoading && selectedIncident && incidentEvents.length === 0 ? (
+              <div className="empty">No events recorded for this incident yet.</div>
+            ) : null}
+            <div className="timeline-list">
+              {incidentEvents.map((evt) => (
+                <div key={`${evt.eventId}-${evt.timestamp}`} className="timeline-item">
+                  <div className="timeline-time">{formatDate(evt.timestamp)}</div>
+                  <div className="timeline-body">
+                    <div className="timeline-title">{evt.type}</div>
+                    <div className="timeline-meta">
+                      <span>{evt.source}</span>
+                      <span>•</span>
+                      <span>{evt.fingerprint}</span>
+                      {evt.severityHint ? (
+                        <>
+                          <span>•</span>
+                          <span>{labelForSeverity(evt.severityHint)}</span>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {eventsNextToken ? (
+              <button
+                className="button ghost"
+                onClick={() => selectedIncident && loadIncidentEvents(selectedIncident.incidentId, eventsNextToken)}
+                disabled={eventsLoading}
+              >
+                Load more events
+              </button>
+            ) : null}
           </div>
 
           <div className="panel ingest">

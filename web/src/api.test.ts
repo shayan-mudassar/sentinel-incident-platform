@@ -14,13 +14,14 @@ describe('normalizeBaseUrl', () => {
 
 describe('buildHeaders', () => {
   it('includes content type by default', () => {
-    const headers = buildHeaders();
+    const headers = buildHeaders('tenant-1');
     expect(headers['content-type']).toBe('application/json');
     expect(headers.authorization).toBeUndefined();
+    expect(headers['X-Tenant-Id']).toBe('tenant-1');
   });
 
   it('adds bearer token when provided', () => {
-    const headers = buildHeaders('token-123');
+    const headers = buildHeaders('tenant-1', 'token-123');
     expect(headers.authorization).toBe('Bearer token-123');
   });
 });
@@ -40,10 +41,10 @@ describe('request errors', () => {
       } as Response;
     }));
 
-    await expect(listIncidents({ baseUrl: 'http://localhost:3000' }, {})).rejects.toBeInstanceOf(ApiRequestError);
+    await expect(listIncidents({ baseUrl: 'http://localhost:3000', tenantId: 'tenant-1' }, {})).rejects.toBeInstanceOf(ApiRequestError);
 
     try {
-      await listIncidents({ baseUrl: 'http://localhost:3000' }, {});
+      await listIncidents({ baseUrl: 'http://localhost:3000', tenantId: 'tenant-1' }, {});
     } catch (error) {
       const apiError = error as ApiRequestError;
       expect(apiError.status).toBe(409);

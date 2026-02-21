@@ -12,7 +12,7 @@ export const formatDate = (value?: string) => {
 };
 
 export const labelForStatus = (status: IncidentStatus) => {
-  return status === 'ACK' ? 'Acknowledged' : status === 'RESOLVED' ? 'Resolved' : 'Open';
+  return status === 'ACKED' ? 'Acknowledged' : status === 'RESOLVED' ? 'Resolved' : 'Open';
 };
 
 export const labelForSeverity = (severity: Severity) => {
