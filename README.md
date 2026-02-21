@@ -67,6 +67,8 @@ rule-based severity and routing, and emits notifications/actions with end-to-end
 - **Auth enforcement**: API Gateway uses a Lambda authorizer that verifies Cognito JWTs when
   `CognitoUserPoolId` is set. In prod (`Stage=prod`), Cognito is required. In non-prod, auth can be
   disabled for DEV-only use.
+- **Tenant binding**: When auth is enabled, JWTs must include a tenant claim (`custom:tenantId`,
+  or `tenantId`) that matches the `X-Tenant-Id` header.
 - **Ingestion auth**: Use `IngestRequiresAuth=true` to require JWTs for `/v1/events`.
 
 ## Idempotency & Deduplication
