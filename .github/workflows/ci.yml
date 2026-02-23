@@ -20,8 +20,8 @@ jobs:
           cache: 'npm'
       - name: Install dependencies
         run: npm ci
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
       - name: Test
         run: npm test
     # Uncomment the following lines to enable web tests and build when applicable
