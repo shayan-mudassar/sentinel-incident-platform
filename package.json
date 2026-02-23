@@ -12,9 +12,12 @@
     "deploy": "sam deploy --guided -t infra/template.yaml",
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
     "demo": "ts-node scripts/demo-generate-events.ts",
     "replay-dlq": "ts-node scripts/replay-dlq.ts",
     "load-test": "ts-node scripts/load-test.ts",
+    "seed": "ts-node scripts/seed.ts",
+    "create-local-tables": "ts-node scripts/create-local-tables.ts",
     "web:dev": "npm --workspace web run dev",
     "web:build": "npm --workspace web run build",
     "web:test": "npm --workspace web run test"
