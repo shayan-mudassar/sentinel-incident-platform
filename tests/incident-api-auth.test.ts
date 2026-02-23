@@ -41,7 +41,7 @@ describe('incident-api auth', () => {
     );
 
     expect(response.statusCode).toBe(401);
-    expect(JSON.parse(response.body).error).toBe('auth_required');
+    expect(JSON.parse(response.body).error.code).toBe('auth_required');
     expect(listIncidents).not.toHaveBeenCalled();
   });
 });

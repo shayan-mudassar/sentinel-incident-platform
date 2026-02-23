@@ -70,6 +70,30 @@ describe('incident api success paths', () => {
     expect(decoded.pk).toBe('next');
   });
 
+  it('returns health response without tenant header', async () => {
+    const response = await handler(
+      { httpMethod: 'GET', path: '/health', headers: {}, body: null, isBase64Encoded: false } as never,
+      { awsRequestId: 'req-health' } as never
+    );
+
+    expect(response.statusCode).toBe(200);
+    const payload = JSON.parse(response.body);
+    expect(payload.status).toBe('ok');
+    expect(payload.service).toBe('sentinel');
+  });
+
+  it('returns service metrics response', async () => {
+    const response = await handler(
+      { httpMethod: 'GET', path: '/metrics', headers: {}, body: null, isBase64Encoded: false } as never,
+      { awsRequestId: 'req-metrics' } as never
+    );
+
+    expect(response.statusCode).toBe(200);
+    const payload = JSON.parse(response.body);
+    expect(payload.service).toBe('sentinel');
+    expect(payload.uptimeSeconds).toBeDefined();
+  });
+
   it('lists incident events with paging token', async () => {
     listIncidentEvents.mockResolvedValueOnce({ items: [{ eventId: 'evt-1' }], nextToken: { sk: 'next' } });
 

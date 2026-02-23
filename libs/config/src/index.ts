@@ -21,6 +21,7 @@ export type SentinelConfig = {
   incidentEventsTtlSeconds: number;
   authRequired: boolean;
   ingestAuthRequired: boolean;
+  ingestApiKey?: string;
 };
 
 const numberFromEnv = (name: string, fallback: number) => {
@@ -51,13 +52,14 @@ export const getConfig = (): SentinelConfig => {
     rulesTableName: process.env.RULES_TABLE_NAME,
     dedupWindowMs: numberFromEnv('DEDUP_WINDOW_MS', 5 * 60 * 1000),
     severityWindowMs: numberFromEnv('SEVERITY_WINDOW_MS', 5 * 60 * 1000),
-    idempotencyTtlSeconds: numberFromEnv('IDEMPOTENCY_TTL_SECONDS', 7 * 24 * 60 * 60),
+    idempotencyTtlSeconds: numberFromEnv('IDEMPOTENCY_TTL_SECONDS', 24 * 60 * 60),
     eventStateTtlSeconds: numberFromEnv('EVENT_STATE_TTL_SECONDS', 7 * 24 * 60 * 60),
     processingTimeoutSeconds: numberFromEnv('PROCESSING_TIMEOUT_SECONDS', 120),
     outboxTtlSeconds: numberFromEnv('OUTBOX_TTL_SECONDS', 7 * 24 * 60 * 60),
     incidentEventsTtlSeconds: numberFromEnv('INCIDENT_EVENTS_TTL_SECONDS', 7 * 24 * 60 * 60),
     authRequired: authRequiredRaw === 'true',
-    ingestAuthRequired: ingestAuthRequiredRaw === 'true'
+    ingestAuthRequired: ingestAuthRequiredRaw === 'true',
+    ingestApiKey: process.env.INGEST_API_KEY
   };
 };
 

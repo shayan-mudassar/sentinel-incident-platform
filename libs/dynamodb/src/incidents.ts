@@ -72,6 +72,7 @@ export type ListIncidentsOptions = {
   source?: string;
   env?: string;
   severity?: Severity;
+  ownerUserId?: string;
   from?: string;
   to?: string;
   limit?: number;
@@ -105,6 +106,11 @@ export const listIncidents = async (
   if (options.env) {
     filterExpressions.push('env = :env');
     expressionAttributeValues[':env'] = options.env;
+  }
+
+  if (options.ownerUserId) {
+    filterExpressions.push('ownerUserId = :ownerUserId');
+    expressionAttributeValues[':ownerUserId'] = options.ownerUserId;
   }
 
   if (options.from) {

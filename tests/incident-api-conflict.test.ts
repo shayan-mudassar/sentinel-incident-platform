@@ -71,7 +71,7 @@ describe('incident-api conflict handling', () => {
     );
 
     expect(response.statusCode).toBe(409);
-    expect(JSON.parse(response.body).error).toBe('conflict');
+    expect(JSON.parse(response.body).error.code).toBe('conflict');
     expect(updateActivePointer).not.toHaveBeenCalled();
     expect(deleteActivePointer).not.toHaveBeenCalled();
     expect(putOutboxEvent).not.toHaveBeenCalled();

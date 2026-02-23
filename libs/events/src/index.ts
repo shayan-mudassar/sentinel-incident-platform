@@ -13,12 +13,14 @@ export type IncidentChangedDetail = {
   env: string;
   updatedAt: string;
   correlationId?: string;
+  requestId?: string;
 };
 
 export const buildIncidentChangedDetail = (
   incident: Incident,
   changeType: IncidentChangeType,
-  correlationId?: string
+  correlationId?: string,
+  requestId?: string
 ): IncidentChangedDetail => {
   return {
     incidentId: incident.incidentId,
@@ -30,6 +32,7 @@ export const buildIncidentChangedDetail = (
     fingerprint: incident.fingerprint,
     env: incident.env,
     updatedAt: incident.updatedAt,
-    correlationId
+    correlationId,
+    requestId
   };
 };

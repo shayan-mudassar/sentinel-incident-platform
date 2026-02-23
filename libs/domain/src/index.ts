@@ -6,6 +6,7 @@ export type IngestEvent = {
   source: string;
   type: string;
   severityHint?: Severity;
+  idempotencyKey?: string;
   timestamp: string;
   fingerprint: string;
   attributes: Record<string, unknown>;
@@ -14,6 +15,7 @@ export type IngestEvent = {
 export type Incident = {
   incidentId: string;
   tenantId: string;
+  ownerUserId?: string;
   status: IncidentStatus;
   source: string;
   fingerprint: string;

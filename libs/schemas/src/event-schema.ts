@@ -7,6 +7,7 @@ export const ingestEventSchema = {
     source: { type: 'string', minLength: 1 },
     type: { type: 'string', minLength: 1 },
     severityHint: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+    idempotencyKey: { type: 'string', minLength: 1 },
     timestamp: { type: 'string', format: 'date-time' },
     fingerprint: { type: 'string', minLength: 1 },
     attributes: { type: 'object', additionalProperties: true }

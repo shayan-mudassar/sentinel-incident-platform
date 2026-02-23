@@ -18,6 +18,10 @@ export const handler = async (_event: unknown, context: Context) => {
 
   let published = 0;
   for (const item of pending) {
+    const detail = item.detail as { requestId?: string; correlationId?: string } | undefined;
+    const recordLogger = detail?.requestId
+      ? logger.withContext({ requestId: detail.requestId, correlationId: detail.correlationId })
+      : logger;
     try {
       const response = await eventBridge.send(
         new PutEventsCommand({
@@ -33,15 +37,15 @@ export const handler = async (_event: unknown, context: Context) => {
       );
 
       if (response.FailedEntryCount && response.FailedEntryCount > 0) {
-        logger.error('failed to publish outbox event', { outboxId: item.outboxId, response });
+        recordLogger.error('failed to publish outbox event', { outboxId: item.outboxId, response });
         continue;
       }
 
       await markOutboxPublished(config.outboxTableName, item.outboxId);
       published += 1;
-      logger.info('published outbox event', { outboxId: item.outboxId });
+      recordLogger.info('published outbox event', { outboxId: item.outboxId });
     } catch (error) {
-      logger.error('outbox publish error', { outboxId: item.outboxId, error: String(error) });
+      recordLogger.error('outbox publish error', { outboxId: item.outboxId, error: String(error) });
     }
   }
 

@@ -46,7 +46,13 @@ export const evaluateSeverity = (
 
 const parseRecord = (
   record: SQSRecord
-): IngestEvent & { env?: string; correlationId?: string; tenantId?: string } => {
+): IngestEvent & {
+  env?: string;
+  correlationId?: string;
+  tenantId?: string;
+  requestId?: string;
+  ownerUserId?: string;
+} => {
   const body = JSON.parse(record.body);
   return body.detail || body;
 };
@@ -84,6 +90,8 @@ const processRecord = async (
     env?: string;
     correlationId?: string;
     tenantId?: string;
+    requestId?: string;
+    ownerUserId?: string;
   };
 
   if (!detail.tenantId) {
@@ -101,13 +109,17 @@ const processRecord = async (
 
   const env = typeof detail.attributes?.env === 'string' ? (detail.attributes.env as string) : config.defaultEnv;
   const correlationId = detail.correlationId || detail.eventId;
-  const logger = baseLogger.withContext({
+  const logContext: Record<string, unknown> = {
     correlationId,
     eventId: detail.eventId,
     source: detail.source,
     fingerprint: detail.fingerprint,
     tenantId
-  });
+  };
+  if (detail.requestId) {
+    logContext.requestId = detail.requestId;
+  }
+  const logger = baseLogger.withContext(logContext);
 
   const processing = await startEventProcessing(
     config.eventStateTableName,
@@ -190,6 +202,7 @@ const processRecord = async (
       const incident: Incident = {
         incidentId,
         tenantId,
+        ownerUserId: detail.ownerUserId,
         status: 'OPEN',
         source: detail.source,
         fingerprint: detail.fingerprint,
@@ -225,7 +238,7 @@ const processRecord = async (
           status: 'PENDING',
           eventType: 'IncidentChanged',
           source: 'sentinel.incident',
-          detail: buildIncidentChangedDetail(incident, 'OPENED', correlationId),
+        detail: buildIncidentChangedDetail(incident, 'OPENED', correlationId, detail.requestId),
           createdAt: now,
           expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)
         });
@@ -337,9 +350,17 @@ const processRecord = async (
         eventType: 'IncidentChanged',
         source: 'sentinel.incident',
         detail: buildIncidentChangedDetail(
-          { ...incident, severity: updatedSeverity, updatedAt, lastEventAt: detail.timestamp, eventCount, version: nextVersion },
+          {
+            ...incident,
+            severity: updatedSeverity,
+            updatedAt,
+            lastEventAt: detail.timestamp,
+            eventCount,
+            version: nextVersion
+          },
           'ESCALATED',
-          correlationId
+          correlationId,
+          detail.requestId
         ),
         createdAt: updatedAt,
         expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)

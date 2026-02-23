@@ -140,7 +140,7 @@ describe('incident-api idempotency', () => {
 
     expect(response.statusCode).toBe(409);
     const payload = JSON.parse(response.body);
-    expect(payload.error).toBe('conflict');
+    expect(payload.error.code).toBe('invalid_state');
     expect(updateIncident).not.toHaveBeenCalled();
   });
 });

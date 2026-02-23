@@ -13,7 +13,20 @@ import {
 } from '@sentinel/dynamodb';
 import { buildIncidentChangedDetail } from '@sentinel/events';
 import { IncidentStatus, Severity } from '@sentinel/domain';
-import { buildError, buildResponse, hasAuthHeader, parseTenantId } from '@sentinel/http';
+import { getUserContextFromEvent, isAdmin, requireAuth } from '@sentinel/auth';
+import {
+  badRequest,
+  conflict,
+  getRequestId,
+  forbidden,
+  notFound,
+  notImplemented,
+  ok,
+  parseTenantId,
+  unauthorized
+} from '@sentinel/http';
+
+const STARTED_AT = Date.now();
 
 const parseIncidentId = (path: string) => {
   const match = path.match(/^\/v1\/incidents\/([^/]+)$/);
@@ -98,18 +111,50 @@ export const handler = async (
   context: Context
 ): Promise<APIGatewayProxyResult> => {
   const config = getConfig();
+  const requestId = getRequestId(event) || context.awsRequestId;
   const correlationId =
-    event.headers['x-correlation-id'] || event.headers['X-Correlation-Id'] || context.awsRequestId;
-  const logger = createLogger({ requestId: context.awsRequestId, correlationId, service: 'incident-api' });
+    event.headers['x-correlation-id'] || event.headers['X-Correlation-Id'] || requestId;
+  const logger = createLogger({
+    requestId,
+    correlationId,
+    service: 'incident-api',
+    route: `${event.httpMethod} ${event.path}`
+  });
+  const userContext = getUserContextFromEvent(event);
+  if (event.httpMethod === 'GET' && event.path === '/health') {
+    return ok(
+      {
+        status: 'ok',
+        service: 'sentinel',
+        timestamp: new Date().toISOString()
+      },
+      { requestId }
+    );
+  }
+
+  if (event.httpMethod === 'GET' && event.path === '/metrics') {
+    const version = process.env.GIT_SHA || process.env.VERSION || 'unknown';
+    const uptimeSeconds = Math.floor((Date.now() - STARTED_AT) / 1000);
+    return ok(
+      {
+        service: 'sentinel',
+        version,
+        uptimeSeconds,
+        timestamp: new Date().toISOString()
+      },
+      { requestId }
+    );
+  }
   const tenantId = parseTenantId(event.headers);
 
   if (!tenantId) {
-    return buildError(400, 'validation_error', 'missing_tenant_id');
+    return badRequest('missing_tenant_id', 'Tenant id is required.', undefined, { requestId });
   }
 
-  if (config.authRequired && !hasAuthHeader(event.headers)) {
-    return buildError(401, 'auth_required', 'missing_authorization');
+  if (config.authRequired && !requireAuth(userContext)) {
+    return unauthorized('auth_required', 'Authorization header is required.', { requestId });
   }
+  const isAdminUser = isAdmin(userContext);
 
   const log = logger.withContext({ tenantId });
 
@@ -117,37 +162,48 @@ export const handler = async (
     const statusRaw = event.queryStringParameters?.status;
     const status = normalizeStatus(statusRaw) || (statusRaw ? undefined : ('OPEN' as IncidentStatus));
     if (!status) {
-      return buildError(400, 'validation_error', 'invalid_status');
+      return badRequest('invalid_status', 'Status must be OPEN, ACKED, or RESOLVED.', undefined, { requestId });
     }
     const severity = normalizeSeverity(event.queryStringParameters?.severity);
     if (event.queryStringParameters?.severity && !severity) {
-      return buildError(400, 'validation_error', 'invalid_severity');
+      return badRequest(
+        'invalid_severity',
+        'Severity must be low, medium, high, or critical.',
+        undefined,
+        { requestId }
+      );
     }
 
     const from = toIsoIfValid(event.queryStringParameters?.from);
     if (event.queryStringParameters?.from && !from) {
-      return buildError(400, 'validation_error', 'invalid_from');
+      return badRequest('invalid_from', 'From must be a valid ISO date-time.', undefined, {
+        requestId
+      });
     }
 
     const to = toIsoIfValid(event.queryStringParameters?.to);
     if (event.queryStringParameters?.to && !to) {
-      return buildError(400, 'validation_error', 'invalid_to');
+      return badRequest('invalid_to', 'To must be a valid ISO date-time.', undefined, { requestId });
     }
     if (from && to && from > to) {
-      return buildError(400, 'validation_error', 'invalid_range');
+      return badRequest('invalid_range', 'From must be earlier than to.', undefined, { requestId });
     }
 
-    const limitRaw = event.queryStringParameters?.limit;
-    const limit = limitRaw ? Number(limitRaw) : undefined;
-    if (limitRaw && (!Number.isInteger(limit) || (limit || 0) <= 0 || (limit || 0) > 100)) {
-      return buildError(400, 'validation_error', 'invalid_limit');
+    const pageSizeRaw = event.queryStringParameters?.pageSize ?? event.queryStringParameters?.limit;
+    const limit = pageSizeRaw ? Number(pageSizeRaw) : undefined;
+    if (pageSizeRaw && (!Number.isInteger(limit) || (limit || 0) <= 0 || (limit || 0) > 100)) {
+      return badRequest('invalid_page_size', 'pageSize must be between 1 and 100.', undefined, {
+        requestId
+      });
     }
 
     const source = event.queryStringParameters?.source;
     const env = event.queryStringParameters?.env;
     const nextToken = decodePageToken(event.queryStringParameters?.nextToken);
     if (event.queryStringParameters?.nextToken && !nextToken) {
-      return buildError(400, 'validation_error', 'invalid_next_token');
+      return badRequest('invalid_next_token', 'nextToken must be a valid page token.', undefined, {
+        requestId
+      });
     }
 
     const response = await listIncidents(config.incidentsTableName, {
@@ -156,17 +212,25 @@ export const handler = async (
       source,
       env,
       severity,
+      ownerUserId: userContext.isAuthenticated && !isAdminUser ? userContext.userId : undefined,
       from,
       to,
       limit,
       nextToken
     });
-    return buildResponse(200, { items: response.items, nextToken: encodePageToken(response.nextToken) });
+    return ok(
+      {
+        items: response.items,
+        nextToken: encodePageToken(response.nextToken),
+        pageSize: limit || response.items.length
+      },
+      { requestId }
+    );
   }
 
   if (event.httpMethod === 'GET' && event.path === '/v1/metrics') {
     if (!config.metricsTableName) {
-      return buildError(501, 'internal_error', 'metrics_not_configured');
+      return notImplemented('metrics_not_configured', 'Metrics are not configured.', { requestId });
     }
     const metrics = await getTenantMetrics(config.metricsTableName, tenantId, [
       'ingested_total',
@@ -189,20 +253,34 @@ export const handler = async (
     if (Object.keys(updatedAt).length > 0) {
       responseBody.updatedAt = updatedAt;
     }
-    return buildResponse(200, responseBody);
+    return ok(responseBody as Record<string, unknown>, { requestId });
   }
 
   if (event.httpMethod === 'GET') {
     const incidentIdFromEvents = parseIncidentEvents(event.path);
     if (incidentIdFromEvents) {
-      const limitRaw = event.queryStringParameters?.limit;
-      const limit = limitRaw ? Number(limitRaw) : undefined;
-      if (limitRaw && (!Number.isInteger(limit) || (limit || 0) <= 0 || (limit || 0) > 100)) {
-        return buildError(400, 'validation_error', 'invalid_limit');
+      const pageSizeRaw = event.queryStringParameters?.pageSize ?? event.queryStringParameters?.limit;
+      const limit = pageSizeRaw ? Number(pageSizeRaw) : undefined;
+      if (pageSizeRaw && (!Number.isInteger(limit) || (limit || 0) <= 0 || (limit || 0) > 100)) {
+        return badRequest('invalid_page_size', 'pageSize must be between 1 and 100.', undefined, {
+          requestId
+        });
       }
       const nextToken = decodePageToken(event.queryStringParameters?.nextToken);
       if (event.queryStringParameters?.nextToken && !nextToken) {
-        return buildError(400, 'validation_error', 'invalid_next_token');
+        return badRequest('invalid_next_token', 'nextToken must be a valid page token.', undefined, {
+          requestId
+        });
+      }
+
+      if (userContext.isAuthenticated && !isAdminUser) {
+        const incident = await getIncidentById(config.incidentsTableName, tenantId, incidentIdFromEvents);
+        if (!incident) {
+          return notFound('not_found', 'Incident not found.', { requestId });
+        }
+        if (incident.ownerUserId !== userContext.userId) {
+          return forbidden('forbidden', 'You do not have access to this incident.', { requestId });
+        }
       }
 
       const result = await listIncidentEvents(config.incidentEventsTableName, {
@@ -211,44 +289,54 @@ export const handler = async (
         limit,
         nextToken
       });
-      return buildResponse(200, {
-        items: result.items,
-        nextToken: encodePageToken(result.nextToken)
-      });
+      return ok(
+        {
+          items: result.items,
+          nextToken: encodePageToken(result.nextToken),
+          pageSize: limit || result.items.length
+        },
+        { requestId }
+      );
     }
 
     const incidentIdFromPath = parseIncidentId(event.path);
     if (!incidentIdFromPath) {
-      return buildError(404, 'not_found');
+      return notFound('not_found', 'Route not found.', { requestId });
     }
 
     const incident = await getIncidentById(config.incidentsTableName, tenantId, incidentIdFromPath);
     if (!incident) {
-      return buildError(404, 'not_found');
+      return notFound('not_found', 'Incident not found.', { requestId });
+    }
+    if (userContext.isAuthenticated && !isAdminUser && incident.ownerUserId !== userContext.userId) {
+      return forbidden('forbidden', 'You do not have access to this incident.', { requestId });
     }
 
-    return buildResponse(200, { incident });
+    return ok({ incident }, { requestId });
   }
 
   if (event.httpMethod === 'POST') {
     const action = parseAction(event.path);
     if (!action) {
-      return buildError(404, 'not_found');
+      return notFound('not_found', 'Route not found.', { requestId });
     }
 
     const incident = await getIncidentById(config.incidentsTableName, tenantId, action.incidentId);
     if (!incident) {
-      return buildError(404, 'not_found');
+      return notFound('not_found', 'Incident not found.', { requestId });
+    }
+    if (userContext.isAuthenticated && !isAdminUser && incident.ownerUserId !== userContext.userId) {
+      return forbidden('forbidden', 'You do not have access to update this incident.', { requestId });
     }
 
     const status: IncidentStatus = action.action === 'ack' ? 'ACKED' : 'RESOLVED';
 
     if (incident.status === status) {
-      return buildResponse(200, { incidentId: incident.incidentId, status, idempotent: true });
+      return ok({ incidentId: incident.incidentId, status, idempotent: true }, { requestId });
     }
 
     if (status === 'ACKED' && incident.status === 'RESOLVED') {
-      return buildError(409, 'conflict', 'invalid_state');
+      return conflict('invalid_state', 'Cannot acknowledge a resolved incident.', { requestId });
     }
 
     const updatedAt = new Date().toISOString();
@@ -274,7 +362,7 @@ export const handler = async (
     } catch (error) {
       if (isConditionalCheckFailed(error)) {
         log.info('incident update conflict', { incidentId: incident.incidentId });
-        return buildError(409, 'conflict', 'conflict');
+        return conflict('conflict', 'Incident was updated by another request.', { requestId });
       }
       throw error;
     }
@@ -306,7 +394,8 @@ export const handler = async (
       detail: buildIncidentChangedDetail(
         { ...incident, status, updatedAt, version: nextVersion },
         status === 'ACKED' ? 'ACKED' : 'RESOLVED',
-        correlationId
+        correlationId,
+        requestId
       ),
       createdAt: updatedAt,
       expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)
@@ -314,8 +403,8 @@ export const handler = async (
 
     log.info('incident status updated', { incidentId: incident.incidentId, status });
 
-    return buildResponse(200, { incidentId: incident.incidentId, status });
+    return ok({ incidentId: incident.incidentId, status }, { requestId });
   }
 
-  return buildError(404, 'not_found');
+  return notFound('not_found', 'Route not found.', { requestId });
 };

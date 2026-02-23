@@ -20,7 +20,7 @@ describe('events detail', () => {
       version: 1
     };
 
-    const detail = buildIncidentChangedDetail(incident, 'ESCALATED', 'corr-1');
+    const detail = buildIncidentChangedDetail(incident, 'ESCALATED', 'corr-1', 'req-1');
     expect(detail).toEqual({
       incidentId: 'inc-1',
       tenantId: 'tenant-1',
@@ -31,7 +31,8 @@ describe('events detail', () => {
       fingerprint: 'fp',
       env: 'prod',
       updatedAt: '2024-01-01T00:00:01.000Z',
-      correlationId: 'corr-1'
+      correlationId: 'corr-1',
+      requestId: 'req-1'
     });
   });
 });

@@ -19,6 +19,7 @@ export const handler = async (
     try {
       const body = JSON.parse(record.body);
       const detail = body.detail || {};
+      const recordLogger = detail.requestId ? logger.withContext({ requestId: detail.requestId }) : logger;
       const tenantId = detail.tenantId as string | undefined;
       const severity = detail.severity as Severity | undefined;
 
@@ -31,7 +32,7 @@ export const handler = async (
       }
 
       if (!config.notificationTargetsTableName) {
-        logger.warn('notification targets table not configured', { tenantId });
+        recordLogger.warn('notification targets table not configured', { tenantId });
       }
 
       const targets = config.notificationTargetsTableName
@@ -47,7 +48,7 @@ export const handler = async (
             : [];
 
       if (effectiveTargets.length === 0) {
-        logger.info('no notification targets for incident', { tenantId, severity });
+        recordLogger.info('no notification targets for incident', { tenantId, severity });
         continue;
       }
 
@@ -79,7 +80,7 @@ export const handler = async (
         );
       }
 
-      logger.info('incident notification', {
+      recordLogger.info('incident notification', {
         incidentId: detail.incidentId,
         changeType: detail.changeType,
         severity: detail.severity,
@@ -87,6 +88,7 @@ export const handler = async (
         source: detail.source,
         fingerprint: detail.fingerprint,
         correlationId: detail.correlationId,
+        requestId: detail.requestId,
         tenantId
       });
     } catch (error) {

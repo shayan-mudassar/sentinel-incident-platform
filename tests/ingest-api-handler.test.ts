@@ -15,6 +15,7 @@ const config = {
   idempotencyTableName: 'Idempotency',
   idempotencyTtlSeconds: 60,
   ingestAuthRequired: false,
+  ingestApiKey: undefined as string | undefined,
   metricsTableName: 'Metrics'
 };
 
@@ -81,6 +82,7 @@ describe('ingest api handler', () => {
     failStore.mockReset();
     validateIngestEvent.mockReset();
     config.ingestAuthRequired = false;
+    config.ingestApiKey = undefined;
   });
 
   it('rejects missing tenant', async () => {
@@ -95,6 +97,15 @@ describe('ingest api handler', () => {
     config.ingestAuthRequired = true;
     const response = await handler(
       makeApiEvent({ headers: { 'X-Tenant-Id': 'tenant-1' } }) as never,
+      { awsRequestId: 'r1' } as never
+    );
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('rejects missing api key when configured', async () => {
+    config.ingestApiKey = 'secret-key';
+    const response = await handler(
+      makeApiEvent() as never,
       { awsRequestId: 'r1' } as never
     );
     expect(response.statusCode).toBe(401);
@@ -183,5 +194,22 @@ describe('ingest api handler', () => {
     expect(detail.correlationId).toBe('corr-1');
     expect(detail.receivedAt).toBeDefined();
     expect(incrementTenantMetric).toHaveBeenCalledWith('Metrics', 'tenant-1', 'ingested_total', 1);
+  });
+
+  it('uses idempotency key header when provided', async () => {
+    config.ingestApiKey = 'secret-key';
+    validateIngestEvent.mockReturnValue({ valid: true, value: baseEvent });
+    start.mockResolvedValueOnce({ started: true });
+    send.mockResolvedValueOnce({ FailedEntryCount: 0 });
+
+    await handler(
+      makeApiEvent({ headers: { 'X-Tenant-Id': 'tenant-1', 'X-API-KEY': 'secret-key', 'Idempotency-Key': 'key-123' } }) as never,
+      { awsRequestId: 'r1' } as never
+    );
+
+    expect(start).toHaveBeenCalledWith('TENANT#t#EVENT#key-123', {
+      tenantId: 'tenant-1',
+      sourceEventId: baseEvent.eventId
+    });
   });
 });

@@ -27,6 +27,9 @@ Parameters:
     AllowedValues:
       - 'true'
       - 'false'
+  IngestApiKey:
+    Type: String
+    Default: ''
   ApiLogRetentionDays:
     Type: Number
     Default: 30
@@ -43,6 +46,9 @@ Parameters:
     Type: String
     Default: ''
   CognitoClientId:
+    Type: String
+    Default: ''
+  GitSha:
     Type: String
     Default: ''
 
@@ -80,6 +86,7 @@ Globals:
         EVENT_BUS_NAME: !Ref SentinelBus
         EVENTS_QUEUE_URL: !Ref EventsQueue
         NOTIFICATIONS_QUEUE_URL: !Ref NotificationsQueue
+        GIT_SHA: !Ref GitSha
         INCIDENTS_TABLE_NAME: !Ref IncidentsTable
         EVENT_STATE_TABLE_NAME: !Ref EventStateTable
         OUTBOX_TABLE_NAME: !Ref OutboxTable
@@ -91,7 +98,7 @@ Globals:
         DEDUP_WINDOW_MS: '300000'
         SEVERITY_WINDOW_MS: '300000'
         PROCESSING_TIMEOUT_SECONDS: '120'
-        IDEMPOTENCY_TTL_SECONDS: '604800'
+        IDEMPOTENCY_TTL_SECONDS: '86400'
         EVENT_STATE_TTL_SECONDS: '604800'
         OUTBOX_TTL_SECONDS: '604800'
         INCIDENT_EVENTS_TTL_SECONDS: '604800'
@@ -145,7 +152,7 @@ Resources:
       StageName: !Ref Stage
       Cors:
         AllowMethods: "'GET,POST,OPTIONS'"
-        AllowHeaders: "'authorization,content-type,x-correlation-id,x-tenant-id'"
+        AllowHeaders: "'authorization,content-type,x-correlation-id,x-tenant-id,x-request-id,x-api-key,idempotency-key'"
         AllowOrigin: !Sub "'${CorsAllowOrigin}'"
       TracingEnabled: true
       AccessLogSetting:
@@ -762,6 +769,7 @@ Resources:
       Environment:
         Variables:
           INGEST_AUTH_REQUIRED: !If [IngestAuthEnabled, 'true', 'false']
+          INGEST_API_KEY: !Ref IngestApiKey
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref IdempotencyTable
@@ -898,6 +906,22 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref MetricsTable
       Events:
+        Health:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /health
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        ServiceMetrics:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SentinelApi
+            Path: /metrics
+            Method: GET
+            Auth:
+              Authorizer: NONE
         ListIncidents:
           Type: Api
           Properties:

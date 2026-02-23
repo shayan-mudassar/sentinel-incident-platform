@@ -1,22 +1,33 @@
 export {};
 
-import { buildError, buildResponse, hasAuthHeader, parseTenantId } from '@sentinel/http';
+import {
+  badRequest,
+  buildResponse,
+  getRequestId,
+  hasAuthHeader,
+  ok,
+  parseTenantId
+} from '@sentinel/http';
 
 describe('http utils', () => {
   it('buildResponse wraps payload as json', () => {
-    const response = buildResponse(201, { ok: true });
+    const response = buildResponse(201, { ok: true }, { requestId: 'req-1' });
     expect(response.statusCode).toBe(201);
     expect(response.headers?.['content-type']).toBe('application/json');
+    expect(response.headers?.['X-Request-Id']).toBe('req-1');
     expect(JSON.parse(response.body)).toEqual({ ok: true });
   });
 
-  it('buildError includes message and details', () => {
-    const response = buildError(400, 'validation_error', 'bad', ['field']);
+  it('badRequest includes message and details', () => {
+    const response = badRequest('invalid', 'bad', ['field'], { requestId: 'req-2' });
     expect(response.statusCode).toBe(400);
     expect(JSON.parse(response.body)).toEqual({
-      error: 'validation_error',
-      message: 'bad',
-      details: ['field']
+      error: {
+        code: 'invalid',
+        message: 'bad',
+        details: ['field'],
+        requestId: 'req-2'
+      }
     });
   });
 
@@ -32,5 +43,20 @@ describe('http utils', () => {
     expect(hasAuthHeader({ authorization: 'token' })).toBe(true);
     expect(hasAuthHeader({ authorization: '   ' })).toBe(false);
     expect(hasAuthHeader(undefined)).toBe(false);
+  });
+
+  it('getRequestId prefers header over requestContext', () => {
+    expect(
+      getRequestId({
+        headers: { 'X-Request-Id': 'req-header' },
+        requestContext: { requestId: 'req-context' }
+      })
+    ).toBe('req-header');
+    expect(
+      getRequestId({
+        headers: {},
+        requestContext: { requestId: 'req-context' }
+      })
+    ).toBe('req-context');
   });
 });

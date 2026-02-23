@@ -55,6 +55,9 @@ const requiresAuth = (methodArn: string) => {
   if (httpMethod.toUpperCase() === 'OPTIONS') {
     return false;
   }
+  if (resourcePath === '/health' || resourcePath === '/metrics') {
+    return false;
+  }
 
   const userPoolId = process.env.COGNITO_USER_POOL_ID?.trim();
   if (!userPoolId) {
@@ -183,6 +186,9 @@ export const handler = async (event: APIGatewayRequestAuthorizerEvent) => {
     if (typeof payload.sub === 'string') {
       context.sub = payload.sub;
     }
+    if (typeof payload.email === 'string') {
+      context.email = payload.email;
+    }
     if (typeof payload.username === 'string') {
       context.username = payload.username;
     }
@@ -193,6 +199,12 @@ export const handler = async (event: APIGatewayRequestAuthorizerEvent) => {
       context.tokenUse = payload.token_use;
     }
     context.tenantId = tenantClaim;
+    const groups = payload['cognito:groups'];
+    if (Array.isArray(groups)) {
+      context.roles = groups.join(',');
+    } else if (typeof groups === 'string') {
+      context.roles = groups;
+    }
 
     return buildPolicy(principalId, 'Allow', event.methodArn, context);
   } catch (error) {
