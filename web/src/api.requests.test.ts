@@ -44,12 +44,12 @@ describe('api request builders', () => {
       severity: 'high',
       from: '2024-01-01',
       to: '2024-01-02',
-      limit: 20,
+      pageSize: 20,
       nextToken: 'token'
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:3000/v1/incidents?status=OPEN&source=svc&env=prod&severity=high&from=2024-01-01&to=2024-01-02&limit=20&nextToken=token',
+      'http://localhost:3000/v1/incidents?status=OPEN&source=svc&env=prod&severity=high&from=2024-01-01&to=2024-01-02&pageSize=20&nextToken=token',
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({
@@ -78,7 +78,7 @@ describe('api request builders', () => {
     await listIncidentEvents(baseConfig, 'inc-1');
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:3000/v1/incidents/inc-1/events?limit=25',
+      'http://localhost:3000/v1/incidents/inc-1/events?pageSize=25',
       expect.objectContaining({ method: 'GET' })
     );
   });

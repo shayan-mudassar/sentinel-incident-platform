@@ -37,7 +37,9 @@ describe('request errors', () => {
         ok: false,
         status: 409,
         statusText: 'Conflict',
-        json: async () => ({ error: 'conflict' })
+        json: async () => ({
+          error: { code: 'conflict', message: 'Conflict', details: { reason: 'update' }, requestId: 'req-1' }
+        })
       } as Response;
     }));
 
@@ -48,7 +50,9 @@ describe('request errors', () => {
     } catch (error) {
       const apiError = error as ApiRequestError;
       expect(apiError.status).toBe(409);
-      expect(apiError.message).toBe('conflict');
+      expect(apiError.message).toBe('Conflict');
+      expect(apiError.code).toBe('conflict');
+      expect(apiError.requestId).toBe('req-1');
     }
   });
 });

@@ -88,6 +88,9 @@ const App = () => {
       if (err.status === 409) {
         return 'Conflict: incident updated elsewhere. Refresh and retry.';
       }
+      if (Array.isArray(err.details) && err.details.length > 0) {
+        return `${err.message}: ${err.details.join(', ')}`;
+      }
       if (err.details && typeof err.details === 'object' && err.details !== null && 'details' in err.details) {
         const detailList = (err.details as { details?: string[] }).details;
         if (Array.isArray(detailList) && detailList.length > 0) {

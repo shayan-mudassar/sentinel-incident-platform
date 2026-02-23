@@ -9,18 +9,24 @@ export type ApiConfig = {
 export type ApiError = {
   status: number;
   message: string;
+  code?: string;
   details?: unknown;
+  requestId?: string;
 };
 
 export class ApiRequestError extends Error {
   status: number;
+  code?: string;
   details?: unknown;
+  requestId?: string;
 
-  constructor(status: number, message: string, details?: unknown) {
+  constructor(status: number, message: string, options?: { code?: string; details?: unknown; requestId?: string }) {
     super(message);
     this.name = 'ApiRequestError';
     this.status = status;
-    this.details = details;
+    this.code = options?.code;
+    this.details = options?.details;
+    this.requestId = options?.requestId;
   }
 }
 
@@ -32,6 +38,7 @@ export type ListFilters = {
   from?: string;
   to?: string;
   limit?: number;
+  pageSize?: number;
   nextToken?: string;
 };
 
@@ -68,12 +75,20 @@ const request = async <T>(
   const data = await parseJson(response);
 
   if (!response.ok) {
+    const envelope = data as { error?: { code?: string; message?: string; details?: unknown; requestId?: string } };
+    const errorCode = envelope?.error?.code;
     const message =
+      envelope?.error?.message ||
+      errorCode ||
       (data as { message?: string })?.message ||
-      (data as { error?: string })?.error ||
       response.statusText ||
       'Request failed';
-    throw new ApiRequestError(response.status, message, data);
+    const details = envelope?.error?.details ?? (data as { details?: unknown })?.details ?? data;
+    throw new ApiRequestError(response.status, message, {
+      code: errorCode,
+      details,
+      requestId: envelope?.error?.requestId
+    });
   }
 
   return data as T;
@@ -99,8 +114,9 @@ export const listIncidents = async (config: ApiConfig, filters: ListFilters) => 
   if (filters.to) {
     params.set('to', filters.to);
   }
-  if (filters.limit) {
-    params.set('limit', String(filters.limit));
+  const pageSize = filters.pageSize ?? filters.limit;
+  if (pageSize) {
+    params.set('pageSize', String(pageSize));
   }
   if (filters.nextToken) {
     params.set('nextToken', filters.nextToken);
@@ -133,7 +149,7 @@ export const listIncidentEvents = async (
   nextToken?: string
 ) => {
   const params = new URLSearchParams();
-  params.set('limit', String(limit));
+  params.set('pageSize', String(limit));
   if (nextToken) {
     params.set('nextToken', nextToken);
   }
