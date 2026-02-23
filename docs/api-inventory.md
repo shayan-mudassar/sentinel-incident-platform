@@ -4,11 +4,42 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
 
 ## API Gateway Routes (current)
 
+### GET `/health`
+- **Auth**: None.
+- **Response**:
+```json
+{
+  "status": "ok",
+  "service": "sentinel",
+  "timestamp": "2024-01-01T00:00:00.000Z"
+}
+```
+
+---
+
+### GET `/metrics`
+- **Auth**: None.
+- **Response**:
+```json
+{
+  "service": "sentinel",
+  "version": "abc123",
+  "uptimeSeconds": 12345,
+  "timestamp": "2024-01-01T00:00:00.000Z"
+}
+```
+
+---
+
 ### POST `/v1/events`
-- **Auth**: Optional. Protected by API Gateway authorizer, but authorizer allows unauthenticated access unless `IngestRequiresAuth=true` and Cognito configured.
+- **Auth**:
+  - JWT required when ingestion auth is enabled.
+  - Optional `X-API-KEY` when `INGEST_API_KEY` is set and request is unauthenticated.
 - **Headers**:
   - `X-Tenant-Id` (required)
-  - `Authorization: Bearer <JWT>` (required only when ingestion auth is enabled)
+  - `Authorization: Bearer <JWT>` (optional or required based on config)
+  - `X-API-KEY` (optional; required when configured and unauthenticated)
+  - `Idempotency-Key` (optional)
 - **Request body** (example):
 ```json
 {
@@ -18,19 +49,20 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
   "severityHint": "high",
   "timestamp": "2024-01-01T00:00:00.000Z",
   "fingerprint": "HTTP_500_/checkout",
-  "attributes": {"env":"prod","region":"us-east-1"}
+  "attributes": {"env":"prod","region":"us-east-1"},
+  "idempotencyKey": "optional-key"
 }
 ```
-- **Responses**:
-  - `200`:
+- **Response**:
 ```json
 {
   "accepted": true,
   "eventId": "evt-123",
-  "status": "published"
+  "status": "published",
+  "idempotencyKey": "optional-key"
 }
 ```
-  - `200` (idempotent replay):
+- **Duplicate replay**:
 ```json
 {
   "accepted": true,
@@ -39,22 +71,30 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
   "duplicate": true
 }
 ```
-  - `400` (validation): `{ "error": "validation_error", "message": "invalid_event", "details": ["..."] }`
-  - `401` (auth missing/required): `{ "error": "auth_required", "message": "missing_authorization" }`
-  - `500` (publish error): `{ "error": "internal_error", "message": "publish_failed" }`
+- **Errors (shape)**:
+```json
+{
+  "error": {
+    "code": "invalid_event",
+    "message": "Event payload failed validation.",
+    "details": ["..."],
+    "requestId": "..."
+  }
+}
+```
 
 **Frontend usage**: `/web` “Ingest Event” panel (`web/src/api.ts` → `ingestEvent`).
 
 ---
 
 ### GET `/v1/incidents`
-- **Auth**: Required when Cognito is configured (default authorizer).
+- **Auth**: Required when Cognito is configured.
 - **Headers**: `X-Tenant-Id` required.
 - **Query params**:
   - `status` (defaults to `OPEN`)
   - `source`, `env`, `severity`
   - `from`, `to` (ISO date-time range)
-  - `limit` (1–100)
+  - `pageSize` (1–100)
   - `nextToken` (base64url-encoded pagination token)
 - **Response**:
 ```json
@@ -62,6 +102,7 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
   "items": [{
     "incidentId": "inc-1",
     "tenantId": "tenant-1",
+    "ownerUserId": "user-1",
     "status": "OPEN",
     "source": "checkout-service",
     "fingerprint": "HTTP_500_/checkout",
@@ -73,7 +114,8 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
     "eventCount": 3,
     "version": 2
   }],
-  "nextToken": "eyJwayI6ICJ..." 
+  "nextToken": "eyJwayI6ICJ...",
+  "pageSize": 25
 }
 ```
 
@@ -90,6 +132,7 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
   "incident": {
     "incidentId": "inc-1",
     "tenantId": "tenant-1",
+    "ownerUserId": "user-1",
     "status": "OPEN",
     "source": "checkout-service",
     "fingerprint": "HTTP_500_/checkout",
@@ -111,7 +154,7 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
 ### GET `/v1/incidents/{incidentId}/events`
 - **Auth**: Required when Cognito is configured.
 - **Headers**: `X-Tenant-Id` required.
-- **Query params**: `limit` (1–100), `nextToken` (base64url)
+- **Query params**: `pageSize` (1–100), `nextToken` (base64url)
 - **Response**:
 ```json
 {
@@ -125,7 +168,8 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
     "fingerprint": "HTTP_500_/checkout",
     "attributes": {"env":"prod"}
   }],
-  "nextToken": "eyJwayI6ICJ..."
+  "nextToken": "eyJwayI6ICJ...",
+  "pageSize": 25
 }
 ```
 
@@ -175,8 +219,9 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
 ---
 
 ## Notes on Auth & Headers
-- Auth is enforced by API Gateway request authorizer when Cognito is configured. Ingest auth is optional based on `IngestRequiresAuth`.
-- `X-Tenant-Id` header is required on all routes.
+- Auth is enforced by API Gateway request authorizer when Cognito is configured.
+- `X-Tenant-Id` header is required on all `/v1/*` routes.
+- `X-Request-Id` is returned in every response header; error bodies include `error.requestId`.
 
 ## Frontend Endpoint Map
 - `Incidents list`: `GET /v1/incidents`

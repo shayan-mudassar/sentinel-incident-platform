@@ -20,19 +20,22 @@ Emitted by **Ingest API** (`services/ingest-api`) into EventBridge.
   "env": "prod",
   "receivedAt": "2024-01-01T00:00:01.000Z",
   "correlationId": "evt-123",
-  "tenantId": "tenant-1"
+  "requestId": "req-abc",
+  "tenantId": "tenant-1",
+  "ownerUserId": "user-1"
 }
 ```
 
 **Route**: EventBridge rule `IngestToQueueRule` sends `sentinel.ingest` to `EventsQueue` (SQS).
 
-**SQS message body**: the EventBridge envelope, where `body.detail` or `body.detail` contains the payload above. The incident engine parses `body.detail || body`.
+**SQS message body**: the EventBridge envelope; the incident engine parses `body.detail || body`.
 
 ### Incident Engine processing (`services/incident-engine`)
 Consumes SQS records. Key behaviors:
 - Dedup window and severity counters stored in `EventStateTable`.
 - Updates `IncidentsTable`, `IncidentEventsTable`, and `OutboxTable`.
 - Emits metrics to CloudWatch EMF via `emitMetrics`.
+- Propagates `requestId` and `correlationId` into outbox events.
 
 ## Outbox → EventBridge → Notifications
 
@@ -51,7 +54,8 @@ Created by Incident Engine and Incident API (ack/resolve). Stored in `OutboxTabl
   "fingerprint": "HTTP_500_/checkout",
   "env": "prod",
   "updatedAt": "2024-01-01T00:01:00.000Z",
-  "correlationId": "evt-123"
+  "correlationId": "evt-123",
+  "requestId": "req-abc"
 }
 ```
 
@@ -66,8 +70,9 @@ Created by Incident Engine and Incident API (ack/resolve). Stored in `OutboxTabl
 - Publishes to SNS topics configured in `NotificationTargetsTable` or falls back to `DEFAULT_NOTIFICATION_TOPIC_ARN`.
 
 ## Correlation / Request IDs
-- Ingest attaches `correlationId` from header `X-Correlation-Id` or eventId.
-- Incident Engine and Notification Worker log `correlationId` when present.
+- Ingest attaches `requestId` from `X-Request-Id` or API Gateway request id.
+- `correlationId` comes from `X-Correlation-Id` or `eventId`.
+- Async handlers log with the propagated IDs when present.
 
 ## Tables involved
 - `EventStateTable`: dedup + severity windows + per-event processing status.

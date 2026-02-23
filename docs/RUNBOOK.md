@@ -17,7 +17,7 @@
 
 ## Triage Checklist
 
-1. Check API health and recent deploys.
+1. Check API health (`GET /health`) and recent deploys.
 2. Inspect CloudWatch logs for the failing function.
 3. Review SQS queue metrics to isolate backlog vs. error.
 4. If DLQ has messages, inspect payloads and decide whether to replay.

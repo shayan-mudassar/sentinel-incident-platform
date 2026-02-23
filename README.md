@@ -70,11 +70,13 @@ rule-based severity and routing, and emits notifications/actions with end-to-end
 - **Tenant binding**: When auth is enabled, JWTs must include a tenant claim (`custom:tenantId`,
   or `tenantId`) that matches the `X-Tenant-Id` header.
 - **Ingestion auth**: Use `IngestRequiresAuth=true` to require JWTs for `/v1/events`.
+- **Roles & ownership**: Cognito groups `ADMIN` and `USER` are supported. `ADMIN` can view/update all
+  incidents; `USER` can view/update incidents they own (`ownerUserId`).
 
 ## Idempotency & Deduplication
 
-- **Ingestion idempotency**: `eventId` is stored in the Idempotency table with TTL (scoped by tenant).
-  Replays return the same response and do not republish to EventBridge.
+- **Ingestion idempotency**: `Idempotency-Key` (or `idempotencyKey` in the payload) is stored in the
+  Idempotency table with TTL (scoped by tenant). Replays return the same response and do not republish.
 - **Processing idempotency**: The incident engine writes a `EVENT#<eventId>` record into EventState
   (scoped by tenant) with TTL to avoid double-counting on retries.
 - **Deduplication**: Events with the same `(tenantId, env, source, fingerprint)` within `DEDUP_WINDOW_MS`
@@ -117,7 +119,7 @@ Example NotificationTargets item:
 
 - `DEDUP_WINDOW_MS`: 5 minutes (tenant-overridable via Rules table).
 - `SEVERITY_WINDOW_MS`: 5 minutes (tenant-overridable via Rules table).
-- `IDEMPOTENCY_TTL_SECONDS`: 7 days.
+- `IDEMPOTENCY_TTL_SECONDS`: 24 hours.
 - `EVENT_STATE_TTL_SECONDS`: 7 days.
 - `OUTBOX_TTL_SECONDS`: 7 days.
 - `INCIDENT_EVENTS_TTL_SECONDS`: 7 days.
@@ -152,8 +154,10 @@ Optional parameters:
 - `AlarmEmail` (optional; sends alarms to email in addition to Slack)
 - `IncidentNotificationEmail` (optional; email for incident notifications)
 - `IngestRequiresAuth` (default: false; enforce JWT on `/v1/events`)
+- `IngestApiKey` (optional; require `X-API-KEY` when unauthenticated ingestion is allowed)
 - `ApiThrottleRateLimit` / `ApiThrottleBurstLimit` (API Gateway throttling)
 - `CognitoClientId` (optional but recommended; enforces token audience/client id checks)
+- `GitSha` (optional; surfaced by `GET /metrics`)
 
 ## Local Dev
 
@@ -164,6 +168,15 @@ sam local start-api -t infra/template.yaml --parameter-overrides CognitoUserPool
 ```
 
 When running without Cognito in dev, set `Stage=dev` and omit `CognitoUserPoolId`.
+
+### DynamoDB Local (optional)
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+export DYNAMODB_ENDPOINT=http://localhost:8000
+npm run create-local-tables
+npm run seed
+```
 
 ## Web UI
 
@@ -242,9 +255,26 @@ npm run load-test
 - **Tracing**: X-Ray tracing enabled for all Lambdas (SAM `Tracing: Active`).
 - **Alerts**: CloudWatch alarms route to SNS (Slack via AWS Chatbot when configured).
 
-## OpenAPI
+## Health & Metrics
 
-See `infra/openapi.yaml` for the ingestion and incident APIs.
+- `GET /health` returns service health.
+- `GET /metrics` returns service uptime and build info.
+- `GET /v1/metrics` returns tenant counters when metrics are configured.
+
+## API Docs (Swagger UI)
+
+```bash
+cd docs
+python -m http.server 8001
+```
+
+Open `http://localhost:8001/swagger/` for Swagger UI.
+The OpenAPI source lives in `docs/openapi.yaml`.
+
+## Rate Limiting
+
+- API Gateway throttling is enabled via `ApiThrottleRateLimit` and `ApiThrottleBurstLimit`.
+- Optional `INGEST_API_KEY` adds protection for unauthenticated ingestion.
 
 ## Operations
 

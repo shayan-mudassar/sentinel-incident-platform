@@ -13,7 +13,9 @@ CorsAllowOrigin=https://your-ui-domain \
 CognitoUserPoolId=<user-pool-id> \
 SlackWorkspaceId=<slack-workspace-id> \
 SlackChannelId=<slack-channel-id> \
-AlarmEmail=<optional-email>
+AlarmEmail=<optional-email> \
+IngestApiKey=<optional-api-key> \
+GitSha=<optional-build-sha>
 ```
 
 Use the `ApiUrl` output in the web UI.
@@ -99,7 +101,9 @@ CorsAllowOrigin=https://your-ui-domain \
 CognitoUserPoolId=<user-pool-id> \
 SlackWorkspaceId=<slack-workspace-id> \
 SlackChannelId=<slack-channel-id> \
-AlarmEmail=<optional-email>
+AlarmEmail=<optional-email> \
+IngestApiKey=<optional-api-key> \
+GitSha=<optional-build-sha>
 ```
 
 After deployment, note the `ApiUrl` output. You will use it in the UI.
