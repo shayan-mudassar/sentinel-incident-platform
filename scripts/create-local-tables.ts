@@ -1,4 +1,9 @@
-import { CreateTableCommand, DynamoDBClient, waitUntilTableExists } from '@aws-sdk/client-dynamodb';
+import {
+  CreateTableCommand,
+  DynamoDBClient,
+  waitUntilTableExists,
+  type CreateTableCommandInput
+} from '@aws-sdk/client-dynamodb';
 
 const stage = process.env.STAGE || 'dev';
 const region = process.env.AWS_REGION || 'us-east-1';
@@ -24,7 +29,7 @@ const client = new DynamoDBClient({
   }
 });
 
-const ensureTable = async (input: Parameters<typeof CreateTableCommand>[0]) => {
+const ensureTable = async (input: CreateTableCommandInput) => {
   try {
     await client.send(new CreateTableCommand(input));
     await waitUntilTableExists({ client, maxWaitTime: 20 }, { TableName: input.TableName });
