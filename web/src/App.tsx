@@ -407,6 +407,7 @@ const App = () => {
                     <span className={`badge severity ${incident.severity}`}>
                       {labelForSeverity(incident.severity)}
                     </span>
+                    {incident.aiStatus === 'completed' ? <span className="badge ai">AI</span> : null}
                   </div>
                 </div>
                 <div className="incident-meta muted">Last event {formatDate(incident.lastEventAt)}</div>
@@ -491,6 +492,46 @@ const App = () => {
                   <div className="detail-label">Events</div>
                   <div className="detail-value">{selectedIncident.eventCount}</div>
                 </div>
+              </div>
+            ) : null}
+            {selectedIncident ? (
+              <div className="ai-panel">
+                <div className="ai-header">
+                  <div>
+                    <div className="detail-label">AI Analysis</div>
+                    <div className="ai-status">
+                      {selectedIncident.aiStatus ? selectedIncident.aiStatus.toUpperCase() : 'UNAVAILABLE'}
+                    </div>
+                  </div>
+                  {selectedIncident.aiSeverityRecommendation ? (
+                    <span className={`badge severity ${selectedIncident.aiSeverityRecommendation}`}>
+                      AI {labelForSeverity(selectedIncident.aiSeverityRecommendation)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="ai-summary">
+                  {selectedIncident.aiSummary ||
+                    (selectedIncident.aiStatus === 'pending'
+                      ? 'Analysis pending. Refresh in a moment.'
+                      : selectedIncident.aiStatus === 'failed'
+                        ? 'AI analysis failed.'
+                        : 'AI analysis not available.')}
+                </div>
+                {selectedIncident.aiSuggestedActions && selectedIncident.aiSuggestedActions.length > 0 ? (
+                  <div className="ai-actions">
+                    {selectedIncident.aiSuggestedActions.map((action, index) => (
+                      <span key={`${action}-${index}`} className="ai-action">
+                        {action}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {selectedIncident.aiStatus === 'failed' && selectedIncident.aiError ? (
+                  <div className="ai-error">Reason: {selectedIncident.aiError}</div>
+                ) : null}
+                {selectedIncident.aiLastAnalyzedAt ? (
+                  <div className="ai-meta">Last analyzed {formatDate(selectedIncident.aiLastAnalyzedAt)}</div>
+                ) : null}
               </div>
             ) : null}
             <div className="actions">

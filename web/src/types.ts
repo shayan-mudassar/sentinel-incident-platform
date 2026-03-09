@@ -15,6 +15,15 @@ export type Incident = {
   lastEventAt: string;
   eventCount: number;
   version: number;
+  aiSummary?: string;
+  aiSeverityRecommendation?: Severity;
+  aiSuggestedActions?: string[];
+  aiConfidence?: number;
+  aiLastAnalyzedAt?: string;
+  aiModel?: string;
+  aiProvider?: string;
+  aiStatus?: 'pending' | 'completed' | 'failed' | 'skipped';
+  aiError?: string;
 };
 
 export type IncidentEvent = {

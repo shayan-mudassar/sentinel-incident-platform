@@ -370,6 +370,11 @@ h1 {
   color: #8f1823;
 }
 
+.badge.ai {
+  background: rgba(60, 145, 230, 0.15);
+  color: #1b64b1;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -386,6 +391,63 @@ h1 {
 .detail-value {
   font-weight: 600;
   margin-top: 4px;
+}
+
+.ai-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+}
+
+.ai-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.ai-status {
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.ai-summary {
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.ai-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-action {
+  background: rgba(60, 145, 230, 0.15);
+  color: #1b64b1;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.ai-error {
+  margin-top: 10px;
+  color: #b73916;
+  font-size: 0.8rem;
+}
+
+.ai-meta {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 .ingest-grid {
