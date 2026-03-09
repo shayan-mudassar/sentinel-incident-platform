@@ -69,6 +69,34 @@ Created by Incident Engine and Incident API (ack/resolve). Stored in `OutboxTabl
 - Notification Worker parses `body.detail` for `tenantId`, `severity`, `status`, `changeType`, etc.
 - Publishes to SNS topics configured in `NotificationTargetsTable` or falls back to `DEFAULT_NOTIFICATION_TOPIC_ARN`.
 
+## Outbox → EventBridge → AI Analysis
+
+### Outbox `IncidentAnalysisRequested` detail
+Created by Incident Engine when AI is enabled. Stored in `OutboxTable`.
+
+**Detail payload (example)**:
+```json
+{
+  "incidentId": "inc-1",
+  "tenantId": "tenant-1",
+  "changeType": "OPENED",
+  "status": "OPEN",
+  "severity": "high",
+  "source": "checkout-service",
+  "fingerprint": "HTTP_500_/checkout",
+  "env": "prod",
+  "updatedAt": "2024-01-01T00:01:00.000Z",
+  "correlationId": "evt-123",
+  "requestId": "req-abc"
+}
+```
+
+### AI Analysis Queue + Worker (`services/ai-analysis`)
+- Outbox Publisher emits `sentinel.ai` events with `detailType=IncidentAnalysisRequested`.
+- EventBridge rule `IncidentAnalysisRequestedRule` sends events to `AiAnalysisQueue`.
+- AI Analysis worker loads incident + recent events, builds prompt, calls provider, and stores AI enrichment on the incident record.
+- Failures are logged and marked as `aiStatus=failed` without blocking incident flow.
+
 ## Correlation / Request IDs
 - Ingest attaches `requestId` from `X-Request-Id` or API Gateway request id.
 - `correlationId` comes from `X-Correlation-Id` or `eventId`.

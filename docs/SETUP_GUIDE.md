@@ -147,6 +147,19 @@ LOAD_TEST_AUTH_TOKEN=<jwt> \
 npm run load-test
 ```
 
+### AI enrichment (optional)
+
+```bash
+export AI_ENABLED=true
+export AI_PROVIDER=mock
+export AI_MODEL=gpt-4o-mini
+export AI_TIMEOUT_MS=4000
+export AI_MAX_RETRIES=2
+export AI_MIN_EVENT_COUNT_FOR_ANALYSIS=1
+export AI_REANALYZE_ON_INCIDENT_UPDATE=false
+export OPENAI_API_KEY=<secret> # required for AI_PROVIDER=openai
+```
+
 ## Frontend (Web UI)
 
 ### Run locally

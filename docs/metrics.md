@@ -21,3 +21,8 @@ If metrics are not configured, the endpoint returns `501`.
   - `incidents_opened`
   - `incidents_escalated`
   - `processing_latency_ms`
+  - `ai_analysis_started`
+  - `ai_analysis_completed`
+  - `ai_analysis_failed`
+  - `ai_analysis_skipped`
+  - `ai_analysis_latency_ms`

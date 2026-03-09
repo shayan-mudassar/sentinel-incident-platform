@@ -112,7 +112,15 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
     "updatedAt": "2024-01-01T00:01:00.000Z",
     "lastEventAt": "2024-01-01T00:01:00.000Z",
     "eventCount": 3,
-    "version": 2
+    "version": 2,
+    "aiSummary": "Checkout API errors spiked, impacting payments.",
+    "aiSeverityRecommendation": "high",
+    "aiSuggestedActions": ["Roll back recent deploy", "Check error logs"],
+    "aiConfidence": 0.72,
+    "aiStatus": "completed",
+    "aiLastAnalyzedAt": "2024-01-01T00:01:30.000Z",
+    "aiModel": "gpt-4o-mini",
+    "aiProvider": "mock"
   }],
   "nextToken": "eyJwayI6ICJ...",
   "pageSize": 25
@@ -142,7 +150,15 @@ Source of truth: `infra/template.yaml`, `infra/openapi.yaml`, and handler implem
     "updatedAt": "2024-01-01T00:01:00.000Z",
     "lastEventAt": "2024-01-01T00:01:00.000Z",
     "eventCount": 3,
-    "version": 2
+    "version": 2,
+    "aiSummary": "Checkout API errors spiked, impacting payments.",
+    "aiSeverityRecommendation": "high",
+    "aiSuggestedActions": ["Roll back recent deploy", "Check error logs"],
+    "aiConfidence": 0.72,
+    "aiStatus": "completed",
+    "aiLastAnalyzedAt": "2024-01-01T00:01:30.000Z",
+    "aiModel": "gpt-4o-mini",
+    "aiProvider": "mock"
   }
 }
 ```

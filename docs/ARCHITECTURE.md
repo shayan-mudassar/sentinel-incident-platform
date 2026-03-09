@@ -53,12 +53,12 @@ API Gateway (/v1/events) -> Ingest Lambda -> EventBridge Bus
                                                 |
                                                 v
                                          EventBridge Bus
-                                                |
-                                                v
-                                     SQS notifications-queue
-                                                |
-                                                v
-                                   Notification Worker Lambda
+                                     /                    \
+                                    v                      v
+                          SQS notifications-queue   SQS ai-analysis-queue
+                                    |                      |
+                                    v                      v
+                          Notification Worker Lambda   AI Analysis Lambda
 
 API Gateway (/v1/incidents...) -> Incident API Lambda -> DynamoDB
 ```
@@ -138,7 +138,21 @@ Why:
 
 - Keeps notifications decoupled and easy to extend later (SNS/email/PagerDuty).
 
-### 6) Incident API
+### 6) AI Enrichment (Optional)
+
+Entry point: `services/ai-analysis/src/handler.ts`
+
+Steps:
+
+1. Consume `IncidentAnalysisRequested` events from `ai-analysis-queue`.
+2. Load incident + recent events, build a prompt, and call the configured AI provider.
+3. Persist AI summary, suggested actions, and status on the incident record.
+
+Why:
+
+- Adds contextual guidance without blocking core incident processing.
+
+### 7) Incident API
 
 Entry point: `services/incident-api/src/handler.ts`
 

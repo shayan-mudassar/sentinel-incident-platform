@@ -19,7 +19,8 @@
 
 1. Check API health (`GET /health`) and recent deploys.
 2. Inspect CloudWatch logs for the failing function.
-3. Review SQS queue metrics to isolate backlog vs. error.
+3. Review SQS queue metrics to isolate backlog vs. error. AI enrichment enabled: check
+   `sentinel-<stage>-ai-analysis-queue` and `sentinel-<stage>-ai-analysis-dlq`.
 4. If DLQ has messages, inspect payloads and decide whether to replay.
 5. Validate EventBridge bus and outbox publisher activity.
 

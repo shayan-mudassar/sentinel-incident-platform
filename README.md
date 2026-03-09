@@ -115,6 +115,27 @@ Example NotificationTargets item:
 }
 ```
 
+## AI Enrichment
+
+Sentinel can optionally enrich incidents with AI-generated summaries, severity recommendations,
+and suggested next actions. Analysis runs asynchronously after incident open/escalation (and
+optionally on updates) and never blocks the core incident workflow.
+
+Enable AI:
+- `AI_ENABLED=true`
+- `AI_PROVIDER=mock` (default) or `openai`
+- `AI_MODEL=gpt-4o-mini` (or any model supported by your provider)
+- `OPENAI_API_KEY=<secret>` (required for `openai`)
+
+Optional tuning:
+- `AI_TIMEOUT_MS=4000`
+- `AI_MAX_RETRIES=2`
+- `AI_MIN_EVENT_COUNT_FOR_ANALYSIS=1`
+- `AI_REANALYZE_ON_INCIDENT_UPDATE=false`
+
+When AI fails or is disabled, incidents still flow normally. The incident record is updated with
+`aiStatus=failed` or `aiStatus=skipped` and an `aiError` reason.
+
 ## Defaults & TTLs
 
 - `DEDUP_WINDOW_MS`: 5 minutes (tenant-overridable via Rules table).
@@ -155,6 +176,14 @@ Optional parameters:
 - `IncidentNotificationEmail` (optional; email for incident notifications)
 - `IngestRequiresAuth` (default: false; enforce JWT on `/v1/events`)
 - `IngestApiKey` (optional; require `X-API-KEY` when unauthenticated ingestion is allowed)
+- `AiEnabled` (default: false; enables async AI enrichment)
+- `AiProvider` (default: mock; set to `openai` for OpenAI)
+- `AiModel` (default: gpt-4o-mini)
+- `AiTimeoutMs` (default: 4000)
+- `AiMaxRetries` (default: 2)
+- `AiMinEventCountForAnalysis` (default: 1)
+- `AiReanalyzeOnIncidentUpdate` (default: false)
+- `OpenAiApiKey` (required when `AiProvider=openai`)
 - `ApiThrottleRateLimit` / `ApiThrottleBurstLimit` (API Gateway throttling)
 - `CognitoClientId` (optional but recommended; enforces token audience/client id checks)
 - `GitSha` (optional; surfaced by `GET /metrics`)

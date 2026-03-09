@@ -571,6 +571,30 @@ components:
           type: integer
         version:
           type: integer
+        aiSummary:
+          type: string
+        aiSeverityRecommendation:
+          $ref: '#/components/schemas/Severity'
+        aiSuggestedActions:
+          type: array
+          items:
+            type: string
+        aiConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        aiLastAnalyzedAt:
+          type: string
+          format: date-time
+        aiModel:
+          type: string
+        aiProvider:
+          type: string
+        aiStatus:
+          type: string
+          enum: [pending, completed, failed, skipped]
+        aiError:
+          type: string
     IncidentEvent:
       type: object
       properties:
