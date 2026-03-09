@@ -283,3 +283,102 @@ export const deleteActivePointer = async (
     })
   );
 };
+
+export type IncidentAiResult = {
+  aiSummary: string;
+  aiSeverityRecommendation: Severity;
+  aiSuggestedActions: string[];
+  aiConfidence: number;
+  aiModel: string;
+  aiProvider: string;
+};
+
+export const updateIncidentAiStatus = async (
+  tableName: string,
+  tenantId: string,
+  incidentId: string,
+  incidentVersion: number,
+  status: 'pending' | 'failed' | 'skipped',
+  options?: {
+    aiProvider?: string;
+    aiModel?: string;
+    aiError?: string;
+  }
+) => {
+  const client = getDynamoDbDocClient();
+  const now = new Date().toISOString();
+  const setClauses: string[] = ['aiStatus = :status', 'aiIncidentVersion = :version'];
+  const values: Record<string, unknown> = {
+    ':status': status,
+    ':version': incidentVersion
+  };
+
+  if (options?.aiProvider) {
+    setClauses.push('aiProvider = :provider');
+    values[':provider'] = options.aiProvider;
+  }
+  if (options?.aiModel) {
+    setClauses.push('aiModel = :model');
+    values[':model'] = options.aiModel;
+  }
+
+  if (status !== 'pending') {
+    setClauses.push('aiLastAnalyzedAt = :now');
+    values[':now'] = now;
+  }
+
+  const removeClauses: string[] = [];
+  if (options?.aiError) {
+    setClauses.push('aiError = :error');
+    values[':error'] = options.aiError;
+  } else if (status !== 'pending') {
+    removeClauses.push('aiError');
+  }
+
+  const updateExpression = `SET ${setClauses.join(', ')}${removeClauses.length ? ` REMOVE ${removeClauses.join(', ')}` : ''}`;
+
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { pk: buildIncidentPk(tenantId, incidentId), sk: 'STATE' },
+      UpdateExpression: updateExpression,
+      ExpressionAttributeValues: {
+        ...values,
+        ':expected': incidentVersion
+      },
+      ConditionExpression: 'version = :expected'
+    })
+  );
+};
+
+export const updateIncidentAiResult = async (
+  tableName: string,
+  tenantId: string,
+  incidentId: string,
+  incidentVersion: number,
+  result: IncidentAiResult
+) => {
+  const client = getDynamoDbDocClient();
+  const now = new Date().toISOString();
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { pk: buildIncidentPk(tenantId, incidentId), sk: 'STATE' },
+      UpdateExpression:
+        'SET aiStatus = :status, aiSummary = :summary, aiSeverityRecommendation = :severity, aiSuggestedActions = :actions, aiConfidence = :confidence, aiLastAnalyzedAt = :now, aiModel = :model, aiProvider = :provider, aiIncidentVersion = :version REMOVE aiError',
+      ExpressionAttributeValues: {
+        ':status': 'completed',
+        ':summary': result.aiSummary,
+        ':severity': result.aiSeverityRecommendation,
+        ':actions': result.aiSuggestedActions,
+        ':confidence': result.aiConfidence,
+        ':now': now,
+        ':model': result.aiModel,
+        ':provider': result.aiProvider,
+        ':version': incidentVersion,
+        ':expected': incidentVersion
+      },
+      ConditionExpression: 'version = :expected'
+    })
+  );
+};

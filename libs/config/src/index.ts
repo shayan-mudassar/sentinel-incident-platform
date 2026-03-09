@@ -22,6 +22,14 @@ export type SentinelConfig = {
   authRequired: boolean;
   ingestAuthRequired: boolean;
   ingestApiKey?: string;
+  aiEnabled: boolean;
+  aiProvider: string;
+  aiModel: string;
+  aiTimeoutMs: number;
+  aiMaxRetries: number;
+  aiMinEventCountForAnalysis: number;
+  aiReanalyzeOnIncidentUpdate: boolean;
+  openaiApiKey?: string;
 };
 
 const numberFromEnv = (name: string, fallback: number) => {
@@ -31,6 +39,14 @@ const numberFromEnv = (name: string, fallback: number) => {
   }
   const value = Number(raw);
   return Number.isNaN(value) ? fallback : value;
+};
+
+const boolFromEnv = (name: string, fallback: boolean) => {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  return raw.toLowerCase() === 'true';
 };
 
 export const getConfig = (): SentinelConfig => {
@@ -59,7 +75,15 @@ export const getConfig = (): SentinelConfig => {
     incidentEventsTtlSeconds: numberFromEnv('INCIDENT_EVENTS_TTL_SECONDS', 7 * 24 * 60 * 60),
     authRequired: authRequiredRaw === 'true',
     ingestAuthRequired: ingestAuthRequiredRaw === 'true',
-    ingestApiKey: process.env.INGEST_API_KEY
+    ingestApiKey: process.env.INGEST_API_KEY,
+    aiEnabled: boolFromEnv('AI_ENABLED', false),
+    aiProvider: process.env.AI_PROVIDER || 'mock',
+    aiModel: process.env.AI_MODEL || 'gpt-4o-mini',
+    aiTimeoutMs: numberFromEnv('AI_TIMEOUT_MS', 4000),
+    aiMaxRetries: numberFromEnv('AI_MAX_RETRIES', 2),
+    aiMinEventCountForAnalysis: numberFromEnv('AI_MIN_EVENT_COUNT_FOR_ANALYSIS', 1),
+    aiReanalyzeOnIncidentUpdate: boolFromEnv('AI_REANALYZE_ON_INCIDENT_UPDATE', false),
+    openaiApiKey: process.env.OPENAI_API_KEY
   };
 };
 
