@@ -20,7 +20,7 @@ import {
   failEventProcessing,
   putOutboxEvent
 } from '@sentinel/dynamodb';
-import { buildIncidentChangedDetail } from '@sentinel/events';
+import { buildIncidentChangedDetail, IncidentChangeType } from '@sentinel/events';
 import { IngestEvent, Incident, IncidentStatus, Severity, maxSeverity } from '@sentinel/domain';
 
 export const severityFromHint = (hint?: Severity): Severity => {
@@ -120,6 +120,21 @@ const processRecord = async (
     logContext.requestId = detail.requestId;
   }
   const logger = baseLogger.withContext(logContext);
+
+  const enqueueAiAnalysis = async (incident: Incident, changeType: IncidentChangeType, createdAt: string) => {
+    if (!config.aiEnabled) {
+      return;
+    }
+    await putOutboxEvent(config.outboxTableName, {
+      outboxId: `INCIDENT-AI#${incident.incidentId}#${incident.version}`,
+      status: 'PENDING',
+      eventType: 'IncidentAnalysisRequested',
+      source: 'sentinel.ai',
+      detail: buildIncidentChangedDetail(incident, changeType, correlationId, detail.requestId),
+      createdAt,
+      expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)
+    });
+  };
 
   const processing = await startEventProcessing(
     config.eventStateTableName,
@@ -238,10 +253,11 @@ const processRecord = async (
           status: 'PENDING',
           eventType: 'IncidentChanged',
           source: 'sentinel.incident',
-        detail: buildIncidentChangedDetail(incident, 'OPENED', correlationId, detail.requestId),
+          detail: buildIncidentChangedDetail(incident, 'OPENED', correlationId, detail.requestId),
           createdAt: now,
           expiresAt: Math.floor((Date.now() + config.outboxTtlSeconds * 1000) / 1000)
         });
+        await enqueueAiAnalysis(incident, 'OPENED', now);
 
         emitMetrics('Sentinel', [{ name: 'incidents_opened', unit: 'Count', value: 1 }], {
           service: 'incident-engine',
@@ -371,6 +387,32 @@ const processRecord = async (
         source: detail.source,
         tenantId
       });
+
+      await enqueueAiAnalysis(
+        {
+          ...incident,
+          severity: updatedSeverity,
+          updatedAt,
+          lastEventAt: detail.timestamp,
+          eventCount,
+          version: nextVersion
+        },
+        'ESCALATED',
+        updatedAt
+      );
+    } else if (config.aiEnabled && config.aiReanalyzeOnIncidentUpdate && !suppressed) {
+      await enqueueAiAnalysis(
+        {
+          ...incident,
+          severity: updatedSeverity,
+          updatedAt,
+          lastEventAt: detail.timestamp,
+          eventCount,
+          version: nextVersion
+        },
+        'UPDATED',
+        updatedAt
+      );
     }
 
     logger.info('incident updated', {

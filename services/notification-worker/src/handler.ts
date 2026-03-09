@@ -1,7 +1,7 @@
 import { SQSEvent, SQSBatchResponse, Context } from 'aws-lambda';
 import { PublishCommand } from '@aws-sdk/client-sns';
 import { getConfig } from '@sentinel/config';
-import { getNotificationTargets } from '@sentinel/dynamodb';
+import { getIncidentById, getNotificationTargets } from '@sentinel/dynamodb';
 import { getSnsClient } from '@sentinel/aws';
 import { createLogger } from '@sentinel/logger';
 import { Severity } from '@sentinel/domain';
@@ -35,6 +35,11 @@ export const handler = async (
         recordLogger.warn('notification targets table not configured', { tenantId });
       }
 
+      const incidentId = detail.incidentId as string | undefined;
+      const incident = incidentId
+        ? await getIncidentById(config.incidentsTableName, tenantId, incidentId)
+        : undefined;
+
       const targets = config.notificationTargetsTableName
         ? await getNotificationTargets(config.notificationTargetsTableName, tenantId, severity)
         : [];
@@ -53,7 +58,7 @@ export const handler = async (
       }
 
       const subject = `[Sentinel] ${detail.changeType} ${detail.severity?.toUpperCase?.() || detail.severity} ${detail.source}`;
-      const message = [
+      const messageLines = [
         `Incident ${detail.changeType || 'UPDATED'} (${detail.status || 'UNKNOWN'})`,
         `Tenant: ${tenantId}`,
         `Severity: ${detail.severity || 'unknown'}`,
@@ -63,7 +68,25 @@ export const handler = async (
         `Incident ID: ${detail.incidentId || 'unknown'}`,
         `Updated: ${detail.updatedAt || new Date().toISOString()}`,
         `Correlation: ${detail.correlationId || 'n/a'}`
-      ].join('\n');
+      ];
+
+      if (incident?.aiSummary) {
+        messageLines.push(`AI Summary: ${incident.aiSummary}`);
+      } else if (incident?.aiStatus === 'failed') {
+        messageLines.push(`AI Summary: unavailable (${incident.aiError || 'failed'})`);
+      } else if (incident?.aiStatus === 'pending') {
+        messageLines.push('AI Summary: pending analysis');
+      }
+
+      if (incident?.aiSeverityRecommendation) {
+        messageLines.push(`AI Severity: ${incident.aiSeverityRecommendation}`);
+      }
+
+      if (incident?.aiSuggestedActions && incident.aiSuggestedActions.length > 0) {
+        messageLines.push(`AI Actions: ${incident.aiSuggestedActions.join('; ')}`);
+      }
+
+      const message = messageLines.join('\n');
 
       for (const target of effectiveTargets) {
         await sns.send(
