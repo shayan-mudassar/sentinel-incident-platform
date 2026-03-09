@@ -4,6 +4,7 @@ const send = jest.fn();
 const info = jest.fn();
 const warn = jest.fn();
 const error = jest.fn();
+const getIncidentById = jest.fn();
 
 jest.mock('@sentinel/aws', () => ({
   getSnsClient: () => ({ send })
@@ -11,6 +12,7 @@ jest.mock('@sentinel/aws', () => ({
 
 jest.mock('@sentinel/config', () => ({
   getConfig: () => ({
+    incidentsTableName: 'Incidents',
     notificationTargetsTableName: 'NotificationTargets'
   })
 }));
@@ -20,7 +22,8 @@ jest.mock('@sentinel/logger', () => ({
 }));
 
 jest.mock('@sentinel/dynamodb', () => ({
-  getNotificationTargets: jest.fn()
+  getNotificationTargets: jest.fn(),
+  getIncidentById
 }));
 
 const { getNotificationTargets } = require('@sentinel/dynamodb');
@@ -42,6 +45,7 @@ describe('notification worker', () => {
     warn.mockReset();
     error.mockReset();
     getNotificationTargets.mockReset();
+    getIncidentById.mockReset();
     delete process.env.DEFAULT_NOTIFICATION_TOPIC_ARN;
   });
 
@@ -58,6 +62,7 @@ describe('notification worker', () => {
   it('uses default topic when no targets configured', async () => {
     process.env.DEFAULT_NOTIFICATION_TOPIC_ARN = 'arn:aws:sns:us-east-1:1:default';
     getNotificationTargets.mockResolvedValueOnce([]);
+    getIncidentById.mockResolvedValueOnce(undefined);
     await handler(
       makeEvent({ tenantId: 'tenant-1', severity: 'high', source: 'svc', changeType: 'OPENED' }) as never,
       { awsRequestId: 'r1' } as never
@@ -72,6 +77,7 @@ describe('notification worker', () => {
       { type: 'SNS', topicArn: 'arn:aws:sns:us-east-1:1:topic1' },
       { type: 'SNS', topicArn: 'arn:aws:sns:us-east-1:1:topic2' }
     ]);
+    getIncidentById.mockResolvedValueOnce(undefined);
     await handler(
       makeEvent({ tenantId: 'tenant-1', severity: 'high', source: 'svc', changeType: 'OPENED' }) as never,
       { awsRequestId: 'r1' } as never
@@ -81,11 +87,35 @@ describe('notification worker', () => {
 
   it('skips when no targets and no default topic', async () => {
     getNotificationTargets.mockResolvedValueOnce([]);
+    getIncidentById.mockResolvedValueOnce(undefined);
     const response = await handler(
       makeEvent({ tenantId: 'tenant-1', severity: 'high', source: 'svc', changeType: 'OPENED' }) as never,
       { awsRequestId: 'r1' } as never
     );
     expect(send).not.toHaveBeenCalled();
     expect(response.batchItemFailures).toHaveLength(0);
+  });
+
+  it('includes ai summary when available', async () => {
+    process.env.DEFAULT_NOTIFICATION_TOPIC_ARN = 'arn:aws:sns:us-east-1:1:default';
+    getNotificationTargets.mockResolvedValueOnce([]);
+    getIncidentById.mockResolvedValueOnce({
+      aiSummary: 'Checkout errors spiking',
+      aiSuggestedActions: ['Rollback deploy', 'Check logs'],
+      aiStatus: 'completed'
+    });
+    await handler(
+      makeEvent({
+        tenantId: 'tenant-1',
+        incidentId: 'inc-1',
+        severity: 'high',
+        source: 'svc',
+        changeType: 'OPENED'
+      }) as never,
+      { awsRequestId: 'r1' } as never
+    );
+    const message = send.mock.calls[0][0].input.Message;
+    expect(message).toContain('AI Summary: Checkout errors spiking');
+    expect(message).toContain('AI Actions: Rollback deploy; Check logs');
   });
 });
