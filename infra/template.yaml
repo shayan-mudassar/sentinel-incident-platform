@@ -51,6 +51,37 @@ Parameters:
   GitSha:
     Type: String
     Default: ''
+  AiEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  AiProvider:
+    Type: String
+    Default: 'mock'
+  AiModel:
+    Type: String
+    Default: 'gpt-4o-mini'
+  AiTimeoutMs:
+    Type: Number
+    Default: 4000
+  AiMaxRetries:
+    Type: Number
+    Default: 2
+  AiMinEventCountForAnalysis:
+    Type: Number
+    Default: 1
+  AiReanalyzeOnIncidentUpdate:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  OpenAiApiKey:
+    Type: String
+    Default: ''
+    NoEcho: true
 
 Conditions:
   HasSlack: !And
@@ -102,6 +133,13 @@ Globals:
         EVENT_STATE_TTL_SECONDS: '604800'
         OUTBOX_TTL_SECONDS: '604800'
         INCIDENT_EVENTS_TTL_SECONDS: '604800'
+        AI_ENABLED: !Ref AiEnabled
+        AI_PROVIDER: !Ref AiProvider
+        AI_MODEL: !Ref AiModel
+        AI_TIMEOUT_MS: !Ref AiTimeoutMs
+        AI_MAX_RETRIES: !Ref AiMaxRetries
+        AI_MIN_EVENT_COUNT_FOR_ANALYSIS: !Ref AiMinEventCountForAnalysis
+        AI_REANALYZE_ON_INCIDENT_UPDATE: !Ref AiReanalyzeOnIncidentUpdate
 
 Resources:
   ApiAccessLogGroup:
@@ -132,6 +170,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-notification-worker
+      RetentionInDays: !Ref LogRetentionDays
+
+  AiAnalysisLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/sentinel-${Stage}-ai-analysis
       RetentionInDays: !Ref LogRetentionDays
 
   AuthAuthorizerLogGroup:
@@ -218,6 +262,23 @@ Resources:
       SqsManagedSseEnabled: true
       MessageRetentionPeriod: 1209600
 
+  AiAnalysisQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub sentinel-${Stage}-ai-analysis-queue
+      VisibilityTimeout: 30
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AiAnalysisDlq.Arn
+        maxReceiveCount: 3
+
+  AiAnalysisDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub sentinel-${Stage}-ai-analysis-dlq
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+
   EventsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
@@ -253,6 +314,24 @@ Resources:
             Condition:
               ArnEquals:
                 aws:SourceArn: !GetAtt IncidentChangedRule.Arn
+
+  AiAnalysisQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref AiAnalysisQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeToSend
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt AiAnalysisQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt IncidentAnalysisRequestedRule.Arn
 
   AlarmTopic:
     Type: AWS::SNS::Topic
@@ -545,6 +624,19 @@ Resources:
       Targets:
         - Arn: !GetAtt NotificationsQueue.Arn
           Id: NotificationsQueueTarget
+
+  IncidentAnalysisRequestedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref SentinelBus
+      EventPattern:
+        source:
+          - sentinel.ai
+        detail-type:
+          - IncidentAnalysisRequested
+      Targets:
+        - Arn: !GetAtt AiAnalysisQueue.Arn
+          Id: AiAnalysisQueueTarget
 
   IncidentsTable:
     Type: AWS::DynamoDB::Table
@@ -865,6 +957,8 @@ Resources:
           DEFAULT_NOTIFICATION_TOPIC_ARN: !Ref NotificationsTopic
       Policies:
         - DynamoDBReadPolicy:
+            TableName: !Ref IncidentsTable
+        - DynamoDBReadPolicy:
             TableName: !Ref NotificationTargetsTable
         - Statement:
             - Effect: Allow
@@ -883,6 +977,37 @@ Resources:
       BuildProperties:
         EntryPoints:
           - services/notification-worker/src/handler.ts
+        Minify: false
+        Target: node20
+        Sourcemap: true
+
+  AiAnalysisFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub sentinel-${Stage}-ai-analysis
+      CodeUri: ..
+      Handler: handler.handler
+      Environment:
+        Variables:
+          OPENAI_API_KEY: !Ref OpenAiApiKey
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref IncidentEventsTable
+      Events:
+        AiAnalysisQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AiAnalysisQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - services/ai-analysis/src/handler.ts
         Minify: false
         Target: node20
         Sourcemap: true
@@ -1026,6 +1151,10 @@ Outputs:
     Value: !Ref NotificationsQueue
   NotificationsDlqUrl:
     Value: !Ref NotificationsDlq
+  AiAnalysisQueueUrl:
+    Value: !Ref AiAnalysisQueue
+  AiAnalysisDlqUrl:
+    Value: !Ref AiAnalysisDlq
   NotificationsTopicArn:
     Description: SNS topic for incident notifications
     Value: !Ref NotificationsTopic
